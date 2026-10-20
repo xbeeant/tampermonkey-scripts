@@ -1,13 +1,22 @@
 // ==UserScript==
 // @name         Network Debugger
+// @name:zh-CN   网络请求拦截与调试面板
 // @namespace    http://tampermonkey.net/
 // @version      1.0.0
-// @description  拦截页面中的 XMLHttpRequest 与 fetch 请求，并提供可视化的悬浮面板用于查看、搜索、导出请求详情。
+// @description  Intercept XMLHttpRequest & fetch on any page, inspect requests/responses/headers in a floating dark-theme panel with search, export, and per-field detail views.
+// @description:zh-CN  拦截任意网页中的 XMLHttpRequest 与 fetch 请求，在深色悬浮面板中实时查看请求方法、状态码、URL、Query 参数、Body、请求/响应头与响应内容，支持搜索过滤、单字段弹窗、JSON 自动格式化、一键复制与导出。
 // @author       -
 // @match        *://*/*
 // @run-at       document-start
 // @grant        none
 // @noframes
+// @license      MIT
+// @homepageURL  https://github.com/xbeeant/tampermonkey-scripts
+// @supportURL   https://github.com/xbeeant/tampermonkey-scripts/issues
+// @compatible   chrome
+// @compatible   firefox
+// @compatible   edge
+// @compatible   safari
 // ==/UserScript==
 
 (function () {
