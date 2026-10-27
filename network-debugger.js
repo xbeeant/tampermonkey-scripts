@@ -231,8 +231,42 @@
     while (el.firstChild) el.removeChild(el.firstChild);
   }
 
+  function showEl(el) {
+    if (el) el.style.display = '';
+  }
+
+  function hideEl(el) {
+    if (el) el.style.display = 'none';
+  }
+
+  function clearAndHide(el) {
+    if (!el) return;
+    clearEl(el);
+    el.style.display = 'none';
+  }
+
+  function clearAndShow(el) {
+    if (!el) return;
+    clearEl(el);
+    el.style.display = '';
+  }
+
+  function addClass(el, cls) {
+    if (el && cls) el.classList.add(cls);
+  }
+
+  function removeClass(el, cls) {
+    if (el && cls) el.classList.remove(cls);
+  }
+
   function openNetworkModal() {
     if (copyBtn) copyBtn.textContent = 'Copy';
+    if (netModal) netModal.open();
+  }
+
+  function openNetworkModalWithCopy(text) {
+    if (copyBtn) copyBtn.textContent = 'Copy';
+    currentCopyText = text != null ? text : currentCopyText;
     if (netModal) netModal.open();
   }
 
@@ -3657,54 +3691,56 @@
 
   /* ============================ 弹窗逻辑 ============================ */
 
+  function addBadge(cls, text, title) {
+    return h('span', { class: 'nrp-badge ' + cls, title: title || undefined }, text);
+  }
+
+  function frameBadgeText(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url);
+      return u.host || u.href;
+    } catch (e) {
+      return url;
+    }
+  }
+
   function buildHeadline(r, extraLabel) {
     clearEl(modalHeadlineEl);
-    modalHeadlineEl.appendChild(h('span', { class: 'nrp-badge nrp-badge-method' }, r.method));
+    modalHeadlineEl.appendChild(addBadge('nrp-badge-method', r.method));
 
     const isSse = r.kind === 'sse';
-    modalHeadlineEl.appendChild(h('span', {
-      class: 'nrp-badge ' + (isSse ? 'nrp-badge-sse' : 'nrp-badge-other'),
-      title: 'Request type'
-    }, isSse ? 'SSE' : (r.kind === 'fetch' ? 'fetch' : 'XHR')));
+    modalHeadlineEl.appendChild(addBadge(
+        isSse ? 'nrp-badge-sse' : 'nrp-badge-other',
+        isSse ? 'SSE' : (r.kind === 'fetch' ? 'fetch' : 'XHR'),
+        'Request type'
+    ));
 
     const st = statusInfo(r);
     const stCls = st.cls === 'nrp-st-ok' ? 'nrp-badge-ok'
         : (st.cls === 'nrp-st-err' ? 'nrp-badge-err' : 'nrp-badge-other');
-    modalHeadlineEl.appendChild(h('span', { class: 'nrp-badge ' + stCls }, st.text));
+    modalHeadlineEl.appendChild(addBadge(stCls, st.text, 'Status: ' + st.text));
 
     if (r.responseKind === 'sse' && !r.sseDone) {
-      modalHeadlineEl.appendChild(h('span', { class: 'nrp-badge nrp-badge-live', title: '流尚未结束' }, '● LIVE'));
+      modalHeadlineEl.appendChild(addBadge('nrp-badge-live', '● LIVE', '流尚未结束'));
     }
 
-    modalHeadlineEl.appendChild(
-        h('span', { class: 'nrp-badge nrp-badge-time', title: formatFullTime(r.time) }, formatTime(r.time))
-    );
+    modalHeadlineEl.appendChild(addBadge('nrp-badge-time', formatTime(r.time), formatFullTime(r.time)));
 
     if (r.duration != null) {
-      modalHeadlineEl.appendChild(
-          h('span', { class: 'nrp-badge nrp-badge-dur', title: 'Duration' }, formatDuration(r.duration))
-      );
+      modalHeadlineEl.appendChild(addBadge('nrp-badge-dur', formatDuration(r.duration), 'Duration'));
     }
 
     if (r.mimeType) {
-      modalHeadlineEl.appendChild(
-          h('span', { class: 'nrp-badge nrp-badge-mime', title: 'MIME: ' + r.mimeType }, r.mimeType.split(';')[0].trim())
-      );
+      modalHeadlineEl.appendChild(addBadge('nrp-badge-mime', r.mimeType.split(';')[0].trim(), 'MIME: ' + r.mimeType));
     }
 
     if (r.frameUrl) {
-      let frameShort = r.frameUrl;
-      try {
-        const u = new URL(r.frameUrl);
-        frameShort = u.host || u.href;
-      } catch (e) { /* ignore */ }
-      modalHeadlineEl.appendChild(
-          h('span', { class: 'nrp-badge nrp-badge-frame', title: 'Frame: ' + r.frameUrl }, 'frame: ' + frameShort)
-      );
+      modalHeadlineEl.appendChild(addBadge('nrp-badge-frame', 'frame: ' + frameBadgeText(r.frameUrl), 'Frame: ' + r.frameUrl));
     }
 
     if (extraLabel) {
-      modalHeadlineEl.appendChild(h('span', { class: 'nrp-badge nrp-badge-other' }, extraLabel));
+      modalHeadlineEl.appendChild(addBadge('nrp-badge-other', extraLabel));
     }
 
     modalHeadlineEl.appendChild(h('span', { class: 'nrp-modal-url', title: r.url }, r.url));
@@ -4053,13 +4089,23 @@
     }
   }
 
-  function openModal(r) {
+  function prepModalForDetail() {
     if (modalContentEl) modalContentEl.scrollTop = 0;
+    clearAndHide(modalParamsEl);
+    clearAndHide(modalHeadersEl);
+    clearAndHide(modalResponseEl);
+  }
+
+  function openModal(r) {
+    prepModalForDetail();
 
     currentModalRecord = r;
     currentModalExtra = null;
 
     buildHeadline(r, null);
+    showEl(modalParamsEl);
+    showEl(modalHeadersEl);
+    showEl(modalResponseEl);
     fillParamsBlock(r);
     fillHeadersBlock(r);
     fillResponseBlock(r);
@@ -4068,16 +4114,13 @@
   }
 
   function openFieldModal(r, field) {
-    if (modalContentEl) modalContentEl.scrollTop = 0;
+    prepModalForDetail();
 
     if (field === 'response') {
       currentModalRecord = r;
       currentModalExtra = 'Response';
       buildHeadline(r, 'Response');
-      modalParamsEl.style.display = 'none';
-      clearEl(modalParamsEl);
-      clearEl(modalHeadersEl);
-      modalHeadersEl.style.display = 'none';
+      showEl(modalResponseEl);
       fillResponseBlock(r);
       openNetworkModal();
       return;
@@ -4087,11 +4130,8 @@
       currentModalRecord = r;
       currentModalExtra = 'Request Headers';
       buildHeadline(r, 'Request Headers');
-      modalParamsEl.style.display = 'none';
-      clearEl(modalParamsEl);
-      clearEl(modalResponseEl);
-      modalResponseEl.style.display = 'none';
       currentCopyText = r.reqHeaders || '';
+      showEl(modalHeadersEl);
       fillReqHeadersBlock(r);
       openNetworkModal();
       return;
@@ -4101,11 +4141,8 @@
       currentModalRecord = r;
       currentModalExtra = 'Response Headers';
       buildHeadline(r, 'Response Headers');
-      modalParamsEl.style.display = 'none';
-      clearEl(modalParamsEl);
-      clearEl(modalResponseEl);
-      modalResponseEl.style.display = 'none';
       currentCopyText = r.respHeaders || '';
+      showEl(modalHeadersEl);
       fillRespHeadersBlock(r);
       openNetworkModal();
       return;
@@ -4115,19 +4152,17 @@
       currentModalRecord = r;
       currentModalExtra = 'Headers';
       buildHeadline(r, 'Headers');
-      modalParamsEl.style.display = 'none';
-      clearEl(modalParamsEl);
 
-      clearEl(modalHeadersEl);
       const parts = [];
       if (r.reqHeaders) parts.push('Request Headers:\n' + r.reqHeaders);
       if (r.respHeaders) parts.push('Response Headers:\n' + r.respHeaders);
       const content = parts.length ? parts.join('\n\n') : '(no headers)';
       currentCopyText = content;
       const sec = makeSection('Headers', content);
-      if (sec) modalHeadersEl.appendChild(sec);
-      modalHeadersEl.style.display = '';
+      if (sec) { clearEl(modalHeadersEl); modalHeadersEl.appendChild(sec); }
+      showEl(modalHeadersEl);
 
+      showEl(modalResponseEl);
       fillResponseBlock(r);
       openNetworkModal();
       return;
@@ -4138,13 +4173,8 @@
       currentModalExtra = field === 'params' ? 'Params' : 'Body';
       currentCopyText = (field === 'params' ? r.params : r.body) || '';
       buildHeadline(r, field === 'params' ? 'Params' : 'Body');
+      showEl(modalParamsEl);
       fillParamsBlock(r, field);
-
-      clearEl(modalHeadersEl);
-      modalHeadersEl.style.display = 'none';
-      clearEl(modalResponseEl);
-      modalResponseEl.style.display = 'none';
-
       openNetworkModal();
       return;
     }
@@ -4156,15 +4186,9 @@
 
     buildHeadline(r, 'URL');
 
-    modalParamsEl.style.display = 'none';
-    clearEl(modalParamsEl);
-    clearEl(modalHeadersEl);
-    modalHeadersEl.style.display = 'none';
-    clearEl(modalResponseEl);
-
     const sec = makeSection('URL', contentText);
-    if (sec) modalResponseEl.appendChild(sec);
-    modalResponseEl.style.display = '';
+    if (sec) { clearEl(modalResponseEl); modalResponseEl.appendChild(sec); }
+    showEl(modalResponseEl);
 
     openNetworkModal();
   }
