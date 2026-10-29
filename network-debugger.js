@@ -47,6 +47,18 @@
   const LS_KEY_RES_SLOW = '__nrp_res_slow_threshold__';
   const LS_KEY_GROUP = '__nrp_group_by__';
 
+  function loadIntSetting(key, fallback) {
+    try {
+      const v = parseInt(localStorage.getItem(key), 10);
+      if (!isNaN(v) && v >= 0) return v;
+    } catch (e) { /* ignore */ }
+    return fallback;
+  }
+
+  function saveSetting(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch (e) { /* ignore */ }
+  }
+
   const TAB_NETWORK = 'network';
   const TAB_RESOURCE = 'resource';
   const TAB_STORAGE = 'storage';
@@ -88,39 +100,21 @@
   let renderTimer = null;
   let currentCopyText = '';
 
-  let slowThreshold = (function () {
-    try {
-      const v = parseInt(localStorage.getItem(LS_KEY_SLOW), 10);
-      if (!isNaN(v) && v >= 0) return v;
-    } catch (e) { /* ignore */ }
-    return DEFAULT_SLOW_THRESHOLD;
-  })();
-
-  let largeResThreshold = (function () {
-    try {
-      const v = parseInt(localStorage.getItem(LS_KEY_LARGE_RES), 10);
-      if (!isNaN(v) && v >= 0) return v;
-    } catch (e) { /* ignore */ }
-    return DEFAULT_LARGE_RES_THRESHOLD;
-  })();
-
-  let resSlowThreshold = (function () {
-    try {
-      const v = parseInt(localStorage.getItem(LS_KEY_RES_SLOW), 10);
-      if (!isNaN(v) && v >= 0) return v;
-    } catch (e) { /* ignore */ }
-    return DEFAULT_RES_SLOW_THRESHOLD;
-  })();
+  let slowThreshold = loadIntSetting(LS_KEY_SLOW, DEFAULT_SLOW_THRESHOLD);
+  let largeResThreshold = loadIntSetting(LS_KEY_LARGE_RES, DEFAULT_LARGE_RES_THRESHOLD);
+  let resSlowThreshold = loadIntSetting(LS_KEY_RES_SLOW, DEFAULT_RES_SLOW_THRESHOLD);
 
   const VALID_GROUP_MODES = ['url', 'domain', 'status', 'method', 'kind', 'respType'];
 
-  let groupBy = (function () {
+  function loadGroupSetting() {
     try {
       const v = localStorage.getItem(LS_KEY_GROUP) || '';
       if (VALID_GROUP_MODES.indexOf(v) !== -1) return v;
     } catch (e) { /* ignore */ }
     return '';
-  })();
+  }
+
+  let groupBy = loadGroupSetting();
 
   let collapsedGroups = {};
   let isFullscreen = false;
@@ -138,12 +132,18 @@
     quick: new Set()
   };
 
+  function getTabState(tab) {
+    const key = tab || currentTab;
+    if (!tabState[key]) tabState[key] = { search: '', groupBy: '', collapsed: {} };
+    return tabState[key];
+  }
+
   let streamSeq = 0;
   const streamMap = {};
   let currentModalRecord = null;
   let currentModalExtra = null;
+  let currentModalField = null;
   let responseViewMode = 'raw'; // raw | tree
-  let responseSearchTerm = '';
 
   /* WebSocket 支持 */
   let wsRecords = [];
@@ -173,24 +173,20 @@
   let groupSelectEl = null;
   let netTabBtnEl = null;
   let resTabBtnEl = null;
-  let slowInputEl = null;
   let fsBtn = null;
   let copyBtn = null;
 
-  /* 统一模态框句柄（替代原 overlayEl / modalEl） */
+  /* 统一模态框句柄 */
   let netModal = null;
   let storeAddModal = null;
   let storeViewModal = null;
 
-  /* 以下变量指向模态框内部节点，保持原渲染函数兼容 */
-  let overlayEl = null;       /* = netModal.overlay（兼容别名） */
-  let modalContentEl = null;  /* = netModal.body（兼容别名） */
-  let modalHeadlineEl = null; /* = netModal.titleEl（兼容别名） */
+  /* 以下变量指向模态框内部节点 */
+  let modalContentEl = null;  /* = netModal.body */
+  let modalHeadlineEl = null; /* = netModal.titleEl */
   let modalParamsEl = null;
   let modalHeadersEl = null;
   let modalResponseEl = null;
-  let modalPreviewEl = null;
-  let modalBodyEl = null;
 
   /* ---------------- Tab：存储 ---------------- */
   let storeTabBtnEl = null;
@@ -201,19 +197,16 @@
   let groupWrapEl = null;
   let clearBtnEl = null;
   let exportBtnEl = null;
+  let harBtnEl = null;
   let storeSubTab = 'local';
   const STORE_SUB_LABELS = { cookie: 'Cookies', local: 'LocalStorage', session: 'SessionStorage' };
 
   /* Storage 新增条目模态框内部节点 */
-  let storeAddOverlayEl = null; /* = storeAddModal.overlay */
-  let storeAddTitleEl = null;
   let storeAddKeyEl = null;
   let storeAddValueEl = null;
   let storeAddSaveEl = null;
 
   /* Storage 查看模态框内部节点 */
-  let storeViewOverlayEl = null; /* = storeViewModal.overlay */
-  let storeViewTitleEl = null;
   let storeViewKeyEl = null;
   let storeViewValueEl = null;
   let storeViewSaveEl = null;
@@ -235,8 +228,8 @@
     if (el) el.style.display = '';
   }
 
-  function hideEl(el) {
-    if (el) el.style.display = 'none';
+  function toggleDisplay(el, visible) {
+    if (el) el.style.display = visible ? '' : 'none';
   }
 
   function clearAndHide(el) {
@@ -245,28 +238,8 @@
     el.style.display = 'none';
   }
 
-  function clearAndShow(el) {
-    if (!el) return;
-    clearEl(el);
-    el.style.display = '';
-  }
-
-  function addClass(el, cls) {
-    if (el && cls) el.classList.add(cls);
-  }
-
-  function removeClass(el, cls) {
-    if (el && cls) el.classList.remove(cls);
-  }
-
   function openNetworkModal() {
     if (copyBtn) copyBtn.textContent = 'Copy';
-    if (netModal) netModal.open();
-  }
-
-  function openNetworkModalWithCopy(text) {
-    if (copyBtn) copyBtn.textContent = 'Copy';
-    currentCopyText = text != null ? text : currentCopyText;
     if (netModal) netModal.open();
   }
 
@@ -280,6 +253,70 @@
       type: 'button',
       title: title
     }, [label, h('span', { class: 'nrp-tab-count', id: countId }, '0')]);
+  }
+
+  function countLines(text) {
+    if (!text) return 0;
+    let n = 0;
+    text.split('\n').forEach(function (line) { if (line.trim()) n++; });
+    return n;
+  }
+
+  /* 解析 "Name: Value" 多行文本为 [{ name, value }] */
+  function parseHeaders(text) {
+    const out = [];
+    if (!text) return out;
+    text.split(/\r?\n/).forEach(function (line) {
+      const s = line.trim();
+      if (!s) return;
+      const idx = s.indexOf(':');
+      if (idx === -1) return;
+      out.push({ name: s.slice(0, idx).trim(), value: s.slice(idx + 1).trim() });
+    });
+    return out;
+  }
+
+  function searchTerms() {
+    const raw = (searchEl && searchEl.value) || '';
+    const q = raw.trim().toLowerCase();
+    return q ? q.split(/\s+/).filter(Boolean) : [];
+  }
+
+  function matchesTerms(haystack, terms) {
+    if (!terms || !terms.length) return true;
+    const hay = String(haystack).toLowerCase();
+    for (let i = 0; i < terms.length; i++) {
+      if (hay.indexOf(terms[i]) === -1) return false;
+    }
+    return true;
+  }
+
+  function emptyRow(colSpan, text, rowClass, cellClass) {
+    const tr = document.createElement('tr');
+    tr.className = rowClass || 'nrp-empty-row';
+    const td = document.createElement('td');
+    td.className = cellClass || 'nrp-empty';
+    td.colSpan = colSpan;
+    td.textContent = text;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function downloadFile(filename, content, mime) {
+    const blob = new Blob([content], { type: mime || 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = h('a', { href: url, download: filename });
+    a.style.display = 'none';
+    (document.body || document.documentElement).appendChild(a);
+    a.click();
+    setTimeout(function () {
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, 0);
+  }
+
+  function fileTimestamp() {
+    return new Date().toISOString().replace(/[:.]/g, '-');
   }
 
   function absUrl(u) {
@@ -470,17 +507,14 @@
 
     if (!terms.length) return true;
 
-    const hay = (
+    return matchesTerms(
         r.method + ' ' + r.url + ' ' + (r.params || '') + ' ' + (r.body || '') + ' ' +
         (r.reqHeaders || '') + ' ' + (r.respHeaders || '') + ' ' +
         (r.status == null ? '' : r.status) + ' ' +
         (r.response || '').slice(0, 5000) + ' ' +
-        (r.frameUrl || '') + ' ' + (r.mimeType || '')
-    ).toLowerCase();
-    for (let i = 0; i < terms.length; i++) {
-      if (hay.indexOf(terms[i]) === -1) return false;
-    }
-    return true;
+        (r.frameUrl || '') + ' ' + (r.mimeType || ''),
+        terms
+    );
   }
 
   function pad(n, len) {
@@ -936,6 +970,30 @@
 
   /* ========================== WebSocket 拦截 ========================== */
 
+  const WS_MAX_MESSAGES = 500;
+
+  function stringifyWsData(data) {
+    if (typeof Blob !== 'undefined' && data instanceof Blob) {
+      return '[Blob ' + data.size + ' bytes]';
+    }
+    if (typeof ArrayBuffer !== 'undefined' &&
+        (data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
+      return '[ArrayBuffer ' + (data.byteLength || 0) + ' bytes]';
+    }
+    return String(data);
+  }
+
+  function pushWsMessage(wsId, dir, data) {
+    const rec = wsMap[wsId];
+    if (!rec) return;
+    if (!rec.messages) rec.messages = [];
+    rec.messages.push({ dir: dir, data: stringifyWsData(data), time: Date.now() });
+    if (rec.messages.length > WS_MAX_MESSAGES) {
+      rec.messages.splice(0, rec.messages.length - WS_MAX_MESSAGES);
+    }
+    updateWsRecord(wsId, { messages: rec.messages });
+  }
+
   function addWsRecord(rec) {
     rec.id = 'ws' + (++wsSeq);
     if (!rec.time) rec.time = Date.now();
@@ -993,40 +1051,14 @@
       } catch (e) {}
       try {
         ws.addEventListener('message', function (ev) {
-          let data = ev.data;
-          if (data instanceof Blob) {
-            data = '[Blob ' + data.size + ' bytes]';
-          } else if (data instanceof ArrayBuffer) {
-            data = '[ArrayBuffer ' + data.byteLength + ' bytes]';
-          } else {
-            data = String(data);
-          }
-          const rec = wsMap[wsId];
-          if (rec) {
-            if (!rec.messages) rec.messages = [];
-            rec.messages.push({ dir: 'in', data: data, time: Date.now() });
-            if (rec.messages.length > 500) rec.messages.splice(0, rec.messages.length - 500);
-            updateWsRecord(wsId, { messages: rec.messages });
-          }
+          pushWsMessage(wsId, 'in', ev.data);
         });
       } catch (e) {}
 
       const origSend = ws.send;
       try {
         ws.send = function (data) {
-          try {
-            let out = data;
-            if (out instanceof Blob) out = '[Blob ' + out.size + ' bytes]';
-            else if (out instanceof ArrayBuffer) out = '[ArrayBuffer ' + out.byteLength + ' bytes]';
-            else out = String(out);
-            const rec = wsMap[wsId];
-            if (rec) {
-              if (!rec.messages) rec.messages = [];
-              rec.messages.push({ dir: 'out', data: out, time: Date.now() });
-              if (rec.messages.length > 500) rec.messages.splice(0, rec.messages.length - 500);
-              updateWsRecord(wsId, { messages: rec.messages });
-            }
-          } catch (e) {}
+          try { pushWsMessage(wsId, 'out', data); } catch (e) {}
           return origSend.apply(this, arguments);
         };
       } catch (e) {}
@@ -1251,6 +1283,10 @@
         const reqTime = Date.now();
         const queryStr = extractQuery(url);
 
+        function withBody(fn) {
+          bodyPromise.then(fn, function () { fn(''); });
+        }
+
         const promise = nativeFetch.apply(this, arguments);
 
         return promise.then(function (res) {
@@ -1275,18 +1311,10 @@
           const isText = isTextMime(mime);
 
           function finalize(responseText, responseKind, binarySize, previewUrl) {
-            bodyPromise.then(function (bodyStr) {
+            withBody(function (bodyStr) {
               addRecord({
                 kind: 'fetch', method: upperMethod, url: finalUrl, params: queryStr,
                 body: bodyStr, reqHeaders: reqHeadersStr, respHeaders: respHeadersStr,
-                status: res.status, response: responseText, responseKind: responseKind,
-                mimeType: mime, binarySize: binarySize, previewUrl: previewUrl || '',
-                duration: duration, time: reqTime
-              });
-            }).catch(function () {
-              addRecord({
-                kind: 'fetch', method: upperMethod, url: finalUrl, params: queryStr,
-                body: '', reqHeaders: reqHeadersStr, respHeaders: respHeadersStr,
                 status: res.status, response: responseText, responseKind: responseKind,
                 mimeType: mime, binarySize: binarySize, previewUrl: previewUrl || '',
                 duration: duration, time: reqTime
@@ -1328,18 +1356,10 @@
         }, function (err) {
           const endTime = Date.now();
           const duration = endTime - reqTime;
-          bodyPromise.then(function (bodyStr) {
+          withBody(function (bodyStr) {
             addRecord({
               kind: 'fetch', method: upperMethod, url: finalUrl, params: queryStr,
               body: bodyStr, reqHeaders: reqHeadersStr, respHeaders: '',
-              status: 0, response: '[network error] ' + (err && err.message ? err.message : ''),
-              responseKind: 'text', mimeType: '', binarySize: 0,
-              duration: duration, time: reqTime
-            });
-          }).catch(function () {
-            addRecord({
-              kind: 'fetch', method: upperMethod, url: finalUrl, params: queryStr,
-              body: '', reqHeaders: reqHeadersStr, respHeaders: '',
               status: 0, response: '[network error] ' + (err && err.message ? err.message : ''),
               responseKind: 'text', mimeType: '', binarySize: 0,
               duration: duration, time: reqTime
@@ -1530,6 +1550,25 @@
 
   const CSS = `
 #nrp-root {
+  --nrp-bg: #0b1017;
+  --nrp-bg-elev: #111923;
+  --nrp-bg-soft: #161f2b;
+  --nrp-bg-input: #060a10;
+  --nrp-border: #263241;
+  --nrp-border-strong: #3a4a5e;
+  --nrp-text: #c9d1d9;
+  --nrp-text-dim: #8b949e;
+  --nrp-text-muted: #6e7681;
+  --nrp-accent: #58a6ff;
+  --nrp-accent-strong: #1f6feb;
+  --nrp-accent-soft: rgba(88,166,255,.16);
+  --nrp-green: #3fb950;
+  --nrp-red: #f85149;
+  --nrp-yellow: #d29922;
+  --nrp-purple: #d2a8ff;
+  --nrp-radius: 10px;
+  --nrp-shadow: 0 18px 50px rgba(0,0,0,.65), 0 2px 8px rgba(0,0,0,.45);
+  --nrp-ring: 0 0 0 2px rgba(88,166,255,.28);
   position: fixed;
   right: 16px;
   bottom: 16px;
@@ -1537,7 +1576,7 @@
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
   line-height: 1.45;
-  color: #c9d1d9;
+  color: var(--nrp-text);
   text-align: left;
   pointer-events: none;
   -webkit-font-smoothing: antialiased;
@@ -1546,18 +1585,26 @@
 #nrp-root *::before,
 #nrp-root *::after { box-sizing: border-box; }
 
+#nrp-root :focus-visible {
+  outline: none;
+  box-shadow: var(--nrp-ring);
+  border-color: var(--nrp-accent) !important;
+}
+
 #nrp-root .nrp-panel {
   pointer-events: auto;
   width: 1180px;
   max-width: calc(100vw - 32px);
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  box-shadow: 0 10px 40px rgba(0,0,0,.65);
+  background:
+    radial-gradient(1200px 220px at 12% -8%, rgba(88,166,255,.10), transparent 70%),
+    linear-gradient(180deg, #0e1520 0%, var(--nrp-bg) 52%, #090d13 100%);
+  border: 1px solid var(--nrp-border);
+  border-radius: var(--nrp-radius);
+  box-shadow: var(--nrp-shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: width .15s ease, max-width .15s ease, height .15s ease, max-height .15s ease, border-radius .15s ease;
+  transition: width .18s ease, max-width .18s ease, height .18s ease, max-height .18s ease, border-radius .18s ease;
 }
 
 #nrp-root .nrp-panel.nrp-fullscreen {
@@ -1571,53 +1618,67 @@
 
 #nrp-root .nrp-header {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; padding: 6px 8px 6px 10px;
-  background: #161b22; border-bottom: 1px solid #30363d;
+  gap: 8px; padding: 7px 9px 7px 12px;
+  background:
+    linear-gradient(180deg, rgba(88,166,255,.08), transparent 140%),
+    linear-gradient(180deg, #18212d, #111923);
+  border-bottom: 1px solid var(--nrp-border);
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
 }
 #nrp-root .nrp-title {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 7px;
   font-weight: 700; font-size: 12px; color: #e6edf3;
-  letter-spacing: .2px; white-space: nowrap;
+  letter-spacing: .3px; white-space: nowrap;
 }
 #nrp-root .nrp-dot {
   width: 8px; height: 8px; border-radius: 50%;
-  background: #3fb950; box-shadow: 0 0 8px rgba(63,185,80,.9);
+  background: radial-gradient(circle at 35% 35%, #7ee787, var(--nrp-green) 65%);
+  box-shadow: 0 0 0 3px rgba(63,185,80,.12), 0 0 10px rgba(63,185,80,.9);
 }
 #nrp-root .nrp-actions { display: flex; gap: 4px; }
 
 #nrp-root .nrp-tabs {
-  display: flex; align-items: center; gap: 2px;
-  flex-shrink: 0; margin-left: 8px;
+  display: flex; align-items: center; gap: 3px;
+  flex-shrink: 0; margin-left: 10px;
+  padding: 2px;
+  background: rgba(6,10,16,.55);
+  border: 1px solid rgba(38,50,65,.8);
+  border-radius: 9px;
 }
 #nrp-root .nrp-tab,
 #nrp-root .nrp-store-tab,
 #nrp-root .nrp-store-view-tab {
   appearance: none; -webkit-appearance: none;
   display: inline-flex; align-items: center;
-  border: 1px solid #30363d; background: transparent; color: #8b949e;
+  border: 1px solid transparent; background: transparent; color: var(--nrp-text-dim);
   font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1.2;
-  border-radius: 6px; cursor: pointer;
+  border-radius: 7px; cursor: pointer;
   white-space: nowrap;
-  transition: background .12s, color .12s, border-color .12s;
+  transition: background .14s, color .14s, border-color .14s, box-shadow .14s, transform .14s;
 }
 #nrp-root .nrp-tab { gap: 5px; padding: 3px 9px; }
 #nrp-root .nrp-store-tab { padding: 3px 9px; }
 #nrp-root .nrp-store-view-tab { gap: 5px; padding: 4px 10px; }
 #nrp-root .nrp-tab:hover,
 #nrp-root .nrp-store-tab:hover,
-#nrp-root .nrp-store-view-tab:hover { background: #21262d; color: #c9d1d9; border-color: #484f58; }
+#nrp-root .nrp-store-view-tab:hover {
+  background: rgba(88,166,255,.08); color: #dbe7f3; border-color: rgba(88,166,255,.22);
+}
 #nrp-root .nrp-tab-active,
 #nrp-root .nrp-store-tab-active,
 #nrp-root .nrp-store-view-tab.nrp-store-view-tab-active {
-  background: rgba(56,139,253,.16); color: #79c0ff;
-  border-color: rgba(56,139,253,.55);
+  background: linear-gradient(180deg, rgba(88,166,255,.24), rgba(56,139,253,.12));
+  color: #9ecbff;
+  border-color: rgba(88,166,255,.52);
+  box-shadow: 0 0 0 1px rgba(88,166,255,.08) inset, 0 2px 8px rgba(31,111,235,.18);
 }
 #nrp-root .nrp-tab-count {
   display: inline-block; min-width: 16px; padding: 0 4px;
-  border-radius: 8px; background: #21262d; color: #8b949e;
+  border-radius: 8px; background: rgba(110,118,129,.2); color: var(--nrp-text-dim);
   font-size: 10px; font-weight: 700; text-align: center;
+  transition: background .14s, color .14s;
 }
-#nrp-root .nrp-tab-active .nrp-tab-count { background: rgba(56,139,253,.25); color: #79c0ff; }
+#nrp-root .nrp-tab-active .nrp-tab-count { background: rgba(88,166,255,.3); color: #c7e2ff; }
 
 #nrp-root .nrp-store {
   display: flex; flex-direction: column;
@@ -1625,28 +1686,31 @@
 }
 #nrp-root .nrp-store-tabs {
   display: flex; align-items: center; gap: 4px;
-  padding: 6px 8px; border-bottom: 1px solid #21262d;
-  flex-shrink: 0; background: #0d1117;
+  padding: 6px 8px; border-bottom: 1px solid rgba(38,50,65,.7);
+  flex-shrink: 0; background: linear-gradient(180deg, #0e1520, var(--nrp-bg));
 }
 #nrp-root .nrp-store-tools {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 8px; border-bottom: 1px solid #21262d;
-  flex-shrink: 0; background: #161b22;
+  padding: 6px 8px; border-bottom: 1px solid rgba(38,50,65,.7);
+  flex-shrink: 0; background: linear-gradient(180deg, #131b26, #101720);
 }
 #nrp-root .nrp-btn-sm { padding: 2px 8px; font-size: 11px; }
 #nrp-root .nrp-store-table-wrap { flex: 1 1 auto; overflow: auto; }
 #nrp-root .nrp-store-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 #nrp-root .nrp-store-th {
   text-align: left; padding: 6px 10px; font-size: 11px; font-weight: 700;
-  color: #8b949e; background: #161b22; border-bottom: 1px solid #30363d;
+  color: var(--nrp-text-dim);
+  background: linear-gradient(180deg, #17202c, #131b26);
+  border-bottom: 1px solid var(--nrp-border);
   position: sticky; top: 0; z-index: 1;
 }
 #nrp-root .nrp-store-actions { text-align: right; }
 #nrp-root .nrp-store-td {
-  padding: 5px 10px; border-bottom: 1px solid #21262d;
+  padding: 5px 10px; border-bottom: 1px solid rgba(38,50,65,.45);
   font-size: 12px; vertical-align: top;
+  transition: background .12s;
 }
-#nrp-root .nrp-store-row:hover .nrp-store-td { background: #161b22; }
+#nrp-root .nrp-store-row:hover .nrp-store-td { background: rgba(88,166,255,.06); }
 #nrp-root .nrp-store-name {
   color: #79c0ff; word-break: break-all; font-weight: 600;
 }
@@ -1655,16 +1719,18 @@
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-all; cursor: pointer;
   color: #e6edf3; line-height: 1.45;
+  transition: color .12s;
 }
-#nrp-root .nrp-store-value-text:hover { color: #79c0ff; }
+#nrp-root .nrp-store-value-text:hover { color: var(--nrp-accent); }
 #nrp-root .nrp-store-actions { text-align: right; white-space: nowrap; }
 #nrp-root .nrp-store-input {
   width: 100%; box-sizing: border-box;
-  background: #010409; border: 1px solid #1f6feb; color: #e6edf3;
-  border-radius: 4px; padding: 3px 6px;
+  background: var(--nrp-bg-input); border: 1px solid var(--nrp-accent-strong); color: #e6edf3;
+  border-radius: 5px; padding: 3px 6px;
   font-family: inherit; font-size: 12px; outline: none;
+  transition: border-color .14s, box-shadow .14s;
 }
-#nrp-root .nrp-store-empty { color: #8b949e; text-align: center; padding: 18px 10px; }
+#nrp-root .nrp-store-empty { color: var(--nrp-text-dim); text-align: center; padding: 20px 10px; }
 
 #nrp-root .nrp-cell-restype { font-weight: 600; }
 #nrp-root .nrp-restype-doc    { color: #e6edf3; }
@@ -1688,22 +1754,41 @@
 
 #nrp-root .nrp-btn {
   appearance: none; -webkit-appearance: none;
-  border: 1px solid #30363d; background: #21262d; color: #c9d1d9;
+  border: 1px solid var(--nrp-border); color: var(--nrp-text);
+  background: linear-gradient(180deg, #232c38, #1a222c);
   font-family: inherit; font-size: 11px; line-height: 1.2;
-  padding: 3px 8px; border-radius: 5px; cursor: pointer;
+  padding: 3px 9px; border-radius: 6px; cursor: pointer;
   white-space: nowrap;
-  transition: background .12s, color .12s, border-color .12s;
+  box-shadow: 0 1px 0 rgba(255,255,255,.045) inset;
+  transition: background .14s, color .14s, border-color .14s, box-shadow .14s, transform .1s;
 }
-#nrp-root .nrp-btn:hover { background: #30363d; color: #fff; border-color: #484f58; }
+#nrp-root .nrp-btn:hover {
+  background: linear-gradient(180deg, #2c3847, #202a36);
+  color: #fff; border-color: var(--nrp-border-strong);
+  box-shadow: 0 1px 0 rgba(255,255,255,.06) inset, 0 3px 10px rgba(0,0,0,.28);
+}
 #nrp-root .nrp-btn:active { transform: translateY(1px); }
 #nrp-root .nrp-btn.nrp-btn-active {
-  background: rgba(56,139,253,.2); color: #79c0ff;
-  border-color: rgba(56,139,253,.6);
+  background: linear-gradient(180deg, rgba(88,166,255,.24), rgba(31,111,235,.16));
+  color: #9ecbff;
+  border-color: rgba(88,166,255,.6);
 }
-#nrp-root .nrp-btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
-#nrp-root .nrp-btn-primary:hover { background: #2ea043; }
-#nrp-root .nrp-btn-danger { background: #da3633; border-color: #f85149; color: #fff; }
-#nrp-root .nrp-btn-danger:hover { background: #f85149; }
+#nrp-root .nrp-btn-primary {
+  background: linear-gradient(180deg, #2ea043, #238636);
+  border-color: #2ea043; color: #fff;
+  box-shadow: 0 1px 0 rgba(255,255,255,.14) inset, 0 3px 10px rgba(35,134,54,.22);
+}
+#nrp-root .nrp-btn-primary:hover {
+  background: linear-gradient(180deg, #3fb950, #2ea043); border-color: #3fb950;
+}
+#nrp-root .nrp-btn-danger {
+  background: linear-gradient(180deg, #e5534b, #c93c37);
+  border-color: #e5534b; color: #fff;
+  box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 3px 10px rgba(201,60,55,.22);
+}
+#nrp-root .nrp-btn-danger:hover {
+  background: linear-gradient(180deg, #f85149, #da3633); border-color: #f85149;
+}
 
 #nrp-root .nrp-body {
   display: flex; flex-direction: column;
@@ -1713,40 +1798,44 @@
 
 #nrp-root .nrp-toolbar {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; border-bottom: 1px solid #21262d;
-  background: #0d1117; flex-shrink: 0;
+  padding: 6px 8px; border-bottom: 1px solid rgba(38,50,65,.7);
+  background: linear-gradient(180deg, #0e1520, #0c121a); flex-shrink: 0;
 }
 #nrp-root .nrp-search,
 #nrp-root .nrp-store-add-input {
-  background: #010409; border: 1px solid #30363d; color: #e6edf3;
-  border-radius: 5px; font-family: inherit; font-size: 12px; outline: none;
+  background: var(--nrp-bg-input); border: 1px solid var(--nrp-border); color: #e6edf3;
+  border-radius: 6px; font-family: inherit; font-size: 12px; outline: none;
+  transition: border-color .14s, box-shadow .14s, background .14s;
 }
-#nrp-root .nrp-search { flex: 1 1 auto; min-width: 0; padding: 4px 8px; }
+#nrp-root .nrp-search { flex: 1 1 auto; min-width: 0; padding: 4px 9px; }
 #nrp-root .nrp-store-add-input { padding: 6px 8px; width: 100%; }
+#nrp-root .nrp-search:hover,
+#nrp-root .nrp-store-add-input:hover { border-color: var(--nrp-border-strong); }
 #nrp-root .nrp-search:focus,
 #nrp-root .nrp-store-add-input:focus,
 #nrp-root .nrp-slow-input:focus,
 #nrp-root .nrp-group-select:focus {
-  border-color: #1f6feb; box-shadow: 0 0 0 2px rgba(31,111,235,.25);
+  border-color: var(--nrp-accent-strong); box-shadow: var(--nrp-ring);
 }
-#nrp-root .nrp-search::placeholder { color: #6e7681; }
-#nrp-root .nrp-stats { color: #8b949e; font-size: 11px; white-space: nowrap; }
+#nrp-root .nrp-search::placeholder { color: var(--nrp-text-muted); }
+#nrp-root .nrp-stats { color: var(--nrp-text-dim); font-size: 11px; white-space: nowrap; }
 
 #nrp-root .nrp-group-wrap {
   display: flex; align-items: center; gap: 4px; white-space: nowrap;
 }
 #nrp-root .nrp-group-label {
-  color: #6e7681; font-size: 10px; font-weight: 700;
+  color: var(--nrp-text-muted); font-size: 10px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .5px;
 }
 #nrp-root .nrp-group-select {
   appearance: none; -webkit-appearance: none;
-  background: #010409; border: 1px solid #30363d; color: #e6edf3;
-  border-radius: 5px; padding: 3px 22px 3px 8px;
+  background-color: var(--nrp-bg-input); border: 1px solid var(--nrp-border); color: #e6edf3;
+  border-radius: 6px; padding: 3px 22px 3px 8px;
   font-family: inherit; font-size: 11px; outline: none; cursor: pointer;
+  transition: border-color .14s, box-shadow .14s;
   background-image:
-    linear-gradient(45deg, transparent 50%, #8b949e 50%),
-    linear-gradient(135deg, #8b949e 50%, transparent 50%);
+    linear-gradient(45deg, transparent 50%, var(--nrp-text-dim) 50%),
+    linear-gradient(135deg, var(--nrp-text-dim) 50%, transparent 50%);
   background-position:
     calc(100% - 12px) calc(50% - 2px),
     calc(100% - 8px) calc(50% - 2px);
@@ -1756,8 +1845,9 @@
 
 #nrp-root .nrp-chips {
   display: flex; flex-wrap: wrap; align-items: center;
-  gap: 6px 10px; padding: 6px 8px;
-  border-bottom: 1px solid #21262d; background: #0d1117;
+  gap: 6px 10px; padding: 7px 8px;
+  border-bottom: 1px solid rgba(38,50,65,.7);
+  background: linear-gradient(180deg, #0d141d, #0b1118);
   flex-shrink: 0;
   max-height: 120px; overflow-y: auto;
 }
@@ -1765,93 +1855,124 @@
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
 }
 #nrp-root .nrp-chips-label {
-  color: #6e7681; font-size: 10px; font-weight: 700;
+  color: var(--nrp-text-muted); font-size: 10px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .5px;
   margin-right: 2px; min-width: 52px;
 }
 #nrp-root .nrp-chip {
   appearance: none; -webkit-appearance: none;
-  border: 1px solid #30363d; background: #161b22; color: #8b949e;
+  border: 1px solid var(--nrp-border); background: linear-gradient(180deg, #1a232f, #141c26); color: var(--nrp-text-dim);
   font-family: inherit; font-size: 11px; line-height: 1.2;
-  padding: 2px 8px; border-radius: 10px; cursor: pointer;
+  padding: 2px 9px; border-radius: 10px; cursor: pointer;
   white-space: nowrap;
-  transition: background .12s, color .12s, border-color .12s;
+  transition: background .14s, color .14s, border-color .14s, box-shadow .14s, transform .1s;
 }
-#nrp-root .nrp-chip:hover { background: #21262d; color: #c9d1d9; border-color: #484f58; }
+#nrp-root .nrp-chip:hover {
+  background: linear-gradient(180deg, #24303e, #1b2430);
+  color: #dbe7f3; border-color: var(--nrp-border-strong);
+  transform: translateY(-1px);
+}
 #nrp-root .nrp-chip.nrp-chip-active {
-  background: rgba(56,139,253,.2); color: #79c0ff;
-  border-color: rgba(56,139,253,.6);
+  background: linear-gradient(180deg, rgba(88,166,255,.24), rgba(31,111,235,.14));
+  color: #9ecbff;
+  border-color: rgba(88,166,255,.6);
+  box-shadow: 0 2px 8px rgba(31,111,235,.16);
 }
 #nrp-root .nrp-chip-kind.nrp-chip-active {
-  background: rgba(121,192,255,.2); color: #79c0ff; border-color: rgba(121,192,255,.6);
+  background: linear-gradient(180deg, rgba(121,192,255,.24), rgba(88,166,255,.12));
+  color: #a5d6ff; border-color: rgba(121,192,255,.6);
 }
 #nrp-root .nrp-chip-method.nrp-chip-active {
-  background: rgba(56,139,253,.2); color: #79c0ff; border-color: rgba(56,139,253,.6);
+  background: linear-gradient(180deg, rgba(88,166,255,.24), rgba(31,111,235,.14));
+  color: #9ecbff; border-color: rgba(88,166,255,.6);
 }
 #nrp-root .nrp-chip-st2xx.nrp-chip-active {
-  background: rgba(63,185,80,.2); color: #3fb950; border-color: rgba(63,185,80,.6);
+  background: linear-gradient(180deg, rgba(63,185,80,.24), rgba(46,160,67,.12));
+  color: #56d364; border-color: rgba(63,185,80,.6);
 }
 #nrp-root .nrp-chip-st3xx.nrp-chip-active {
-  background: rgba(210,153,34,.2); color: #d29922; border-color: rgba(210,153,34,.6);
+  background: linear-gradient(180deg, rgba(210,153,34,.24), rgba(158,106,0,.12));
+  color: #e3b341; border-color: rgba(210,153,34,.6);
 }
 #nrp-root .nrp-chip-st4xx.nrp-chip-active,
 #nrp-root .nrp-chip-st5xx.nrp-chip-active,
 #nrp-root .nrp-chip-sterr.nrp-chip-active,
 #nrp-root .nrp-chip-error.nrp-chip-active {
-  background: rgba(248,81,73,.2); color: #f85149; border-color: rgba(248,81,73,.6);
+  background: linear-gradient(180deg, rgba(248,81,73,.24), rgba(201,60,55,.14));
+  color: #ff7b72; border-color: rgba(248,81,73,.6);
 }
 #nrp-root .nrp-chip-flag.nrp-chip-active {
-  background: rgba(210,168,255,.2); color: #d2a8ff; border-color: rgba(210,168,255,.6);
+  background: linear-gradient(180deg, rgba(210,168,255,.24), rgba(163,113,247,.12));
+  color: var(--nrp-purple); border-color: rgba(210,168,255,.6);
 }
 #nrp-root .nrp-chips-reset {
-  margin-left: auto; color: #6e7681; font-size: 11px;
+  margin-left: auto; color: var(--nrp-text-muted); font-size: 11px;
   background: transparent; border: 1px solid transparent;
-  padding: 2px 6px; border-radius: 5px; cursor: pointer;
+  padding: 2px 7px; border-radius: 6px; cursor: pointer;
   white-space: nowrap;
+  transition: color .14s, border-color .14s, background .14s;
 }
-#nrp-root .nrp-chips-reset:hover { color: #c9d1d9; border-color: #30363d; }
+#nrp-root .nrp-chips-reset:hover {
+  color: #dbe7f3; border-color: var(--nrp-border);
+  background: rgba(88,166,255,.08);
+}
 
 #nrp-root .nrp-slow-threshold {
   display: inline-flex; align-items: center; gap: 3px; margin-left: 2px;
 }
 #nrp-root .nrp-slow-threshold-label {
-  color: #6e7681; font-size: 10px; font-weight: 700; letter-spacing: .3px;
+  color: var(--nrp-text-muted); font-size: 10px; font-weight: 700; letter-spacing: .3px;
 }
 #nrp-root .nrp-slow-input {
   width: 58px;
-  background: #010409; border: 1px solid #30363d; color: #e6edf3;
-  border-radius: 5px; padding: 2px 6px;
+  background: var(--nrp-bg-input); border: 1px solid var(--nrp-border); color: #e6edf3;
+  border-radius: 6px; padding: 2px 6px;
   font-family: inherit; font-size: 11px; outline: none;
   text-align: right;
+  transition: border-color .14s, box-shadow .14s;
 }
-#nrp-root .nrp-slow-unit { color: #8b949e; font-size: 10px; }
+#nrp-root .nrp-slow-unit { color: var(--nrp-text-dim); font-size: 10px; }
 
 #nrp-root .nrp-table-wrap { flex: 1 1 auto; overflow: auto; }
 #nrp-root .nrp-table-wrap::-webkit-scrollbar,
-#nrp-root .nrp-store-table-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
+#nrp-root .nrp-store-table-wrap::-webkit-scrollbar,
+#nrp-root .nrp-chips::-webkit-scrollbar { width: 10px; height: 10px; }
 #nrp-root .nrp-table-wrap::-webkit-scrollbar-track,
-#nrp-root .nrp-store-table-wrap::-webkit-scrollbar-track { background: #0d1117; }
+#nrp-root .nrp-store-table-wrap::-webkit-scrollbar-track,
+#nrp-root .nrp-chips::-webkit-scrollbar-track { background: rgba(6,10,16,.6); }
 #nrp-root .nrp-table-wrap::-webkit-scrollbar-thumb,
-#nrp-root .nrp-store-table-wrap::-webkit-scrollbar-thumb { background: #30363d; border-radius: 5px; }
+#nrp-root .nrp-store-table-wrap::-webkit-scrollbar-thumb,
+#nrp-root .nrp-chips::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #3a4a5e, #2b3746);
+  border-radius: 6px; border: 2px solid transparent; background-clip: padding-box;
+}
 #nrp-root .nrp-table-wrap::-webkit-scrollbar-thumb:hover,
-#nrp-root .nrp-store-table-wrap::-webkit-scrollbar-thumb:hover { background: #484f58; }
+#nrp-root .nrp-store-table-wrap::-webkit-scrollbar-thumb:hover,
+#nrp-root .nrp-chips::-webkit-scrollbar-thumb:hover { background: #4b5f78; background-clip: padding-box; }
+#nrp-root .nrp-table-wrap,
+#nrp-root .nrp-store-table-wrap { scrollbar-width: thin; scrollbar-color: #3a4a5e transparent; }
 
 #nrp-root table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 #nrp-root th {
   position: sticky; top: 0; z-index: 1;
-  background: #161b22; color: #8b949e;
+  background: linear-gradient(180deg, #17202c, #131b26); color: var(--nrp-text-dim);
   font-size: 11px; font-weight: 700; text-align: left;
-  padding: 5px 8px; border-bottom: 1px solid #30363d;
+  padding: 6px 8px; border-bottom: 1px solid var(--nrp-border);
   white-space: nowrap;
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
 }
 #nrp-root td {
-  padding: 4px 8px; border-bottom: 1px solid #1b222b;
+  padding: 4px 8px; border-bottom: 1px solid rgba(38,50,65,.42);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   vertical-align: middle;
 }
 #nrp-root tbody tr { cursor: pointer; }
-#nrp-root tbody tr.nrp-data-row:nth-child(even) { background: #10161d; }
-#nrp-root tbody tr.nrp-data-row:hover { background: #1c2733; }
+#nrp-root tbody tr.nrp-data-row { transition: background .12s; }
+#nrp-root tbody tr.nrp-data-row:nth-child(even) { background: rgba(255,255,255,.018); }
+#nrp-root tbody tr.nrp-data-row:hover {
+  background: linear-gradient(90deg, rgba(88,166,255,.10), rgba(88,166,255,.035));
+  box-shadow: inset 2px 0 0 var(--nrp-accent);
+}
 
 #nrp-root .nrp-cell-method { color: #79c0ff; font-weight: 600; }
 #nrp-root .nrp-cell-time { color: #8b949e; }
@@ -1869,77 +1990,114 @@
   cursor: pointer;
   text-decoration: underline;
   text-decoration-style: dotted;
+  text-decoration-color: rgba(88,166,255,.55);
   text-underline-offset: 3px;
+  transition: color .12s, text-decoration-color .12s;
 }
-#nrp-root .nrp-cell-clickable:hover { color: #e6edf3; }
+#nrp-root .nrp-cell-clickable:hover {
+  color: #fff; text-decoration-color: var(--nrp-accent);
+}
 
-#nrp-root .nrp-group-row { cursor: pointer; background: #161b22 !important; }
-#nrp-root .nrp-group-row:hover { background: #1c2733 !important; }
+#nrp-root .nrp-group-row {
+  cursor: pointer; background: linear-gradient(180deg, #17202c, #131b26) !important;
+}
+#nrp-root .nrp-group-row:hover {
+  background: linear-gradient(180deg, #1d2938, #17212d) !important;
+}
 #nrp-root td.nrp-group-cell {
   padding: 5px 8px;
   color: #e6edf3; font-weight: 700; font-size: 11px;
-  border-top: 1px solid #30363d;
-  border-bottom: 1px solid #30363d;
+  border-top: 1px solid var(--nrp-border);
+  border-bottom: 1px solid var(--nrp-border);
 }
 #nrp-root .nrp-group-caret {
   display: inline-block; width: 12px; text-align: center;
-  color: #8b949e; transition: transform .12s;
+  color: var(--nrp-text-dim); transition: transform .14s;
 }
 #nrp-root tr.nrp-group-row.nrp-group-collapsed .nrp-group-caret { transform: rotate(-90deg); }
 #nrp-root .nrp-group-key { color: #79c0ff; margin-left: 4px; }
 #nrp-root .nrp-group-count {
-  color: #8b949e; font-weight: 400; margin-left: 8px; font-size: 10px;
+  color: var(--nrp-text-dim); font-weight: 400; margin-left: 8px; font-size: 10px;
 }
 #nrp-root .nrp-group-badge {
   display: inline-block; margin-left: 6px;
   padding: 0 6px; border-radius: 8px;
-  background: #21262d; color: #8b949e;
+  background: rgba(110,118,129,.18); color: var(--nrp-text-dim);
   font-size: 10px; font-weight: 400;
 }
 
 #nrp-root .nrp-empty-row { cursor: default; background: transparent !important; }
 #nrp-root td.nrp-empty {
-  text-align: center; color: #6e7681;
-  padding: 28px 8px; font-style: italic;
+  text-align: center; color: var(--nrp-text-muted);
+  padding: 30px 8px; font-style: italic;
 }
 
 #nrp-root .nrp-fab {
   display: none; pointer-events: auto;
   position: absolute; right: 0; bottom: 0;
-  width: 46px; height: 46px; border-radius: 50%;
-  border: 1px solid #30363d; background: #161b22; color: #3fb950;
-  font-family: inherit; font-size: 11px; font-weight: 700;
+  min-width: 32px; min-height: 32px;
+  aspect-ratio: 1 / 1;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  appearance: none; -webkit-appearance: none;
+  border: 1px solid var(--nrp-border-strong);
+  background:
+    radial-gradient(circle at 32% 26%, rgba(88,166,255,.24), transparent 62%),
+    linear-gradient(180deg, #1b2431, #121a24);
+  color: var(--nrp-green);
+  font-family: inherit; font-size: 12px; font-weight: 700;
+  line-height: 1; letter-spacing: .4px;
   cursor: pointer; align-items: center; justify-content: center;
-  box-shadow: 0 6px 20px rgba(0,0,0,.6);
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.03) inset;
+  transition: transform .16s, box-shadow .16s, color .16s;
 }
-#nrp-root .nrp-fab:hover { background: #21262d; color: #56d364; }
+#nrp-root .nrp-fab:hover {
+  transform: translateY(-2px) scale(1.03);
+  color: #56d364;
+  box-shadow: 0 14px 34px rgba(0,0,0,.7), 0 0 18px rgba(63,185,80,.22);
+}
+#nrp-root .nrp-fab:active { transform: translateY(0) scale(.98); }
 
 /* ============ 通用模态框：可复用 head / body / footer ============ */
 #nrp-root .nrp-overlay {
   display: none;
   position: fixed; inset: 0;
   z-index: ${OVERLAY_Z};
-  background: rgba(1,4,9,.72);
+  background: rgba(2,6,11,.72);
+  backdrop-filter: blur(3px) saturate(1.1);
+  -webkit-backdrop-filter: blur(3px) saturate(1.1);
   align-items: center; justify-content: center;
   padding: 24px;
   pointer-events: auto;
 }
 #nrp-root .nrp-overlay.nrp-open { display: flex; }
+#nrp-root .nrp-overlay.nrp-open .nrp-modal {
+  animation: nrp-modal-in .2s cubic-bezier(.2,.8,.3,1);
+}
+@keyframes nrp-modal-in {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 #nrp-root .nrp-modal {
   width: 920px; max-width: 92vw;
   max-height: 82vh;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.7);
+  background:
+    radial-gradient(900px 180px at 8% -10%, rgba(88,166,255,.09), transparent 70%),
+    linear-gradient(180deg, #0e1520, var(--nrp-bg) 60%, #090d13);
+  border: 1px solid var(--nrp-border);
+  border-radius: 12px;
+  box-shadow: 0 28px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.02) inset;
   display: flex; flex-direction: column;
   overflow: hidden;
 }
 #nrp-root .nrp-modal-head {
   display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 10px; padding: 10px 12px;
-  background: #161b22; border-bottom: 1px solid #30363d;
+  gap: 10px; padding: 11px 14px;
+  background: linear-gradient(180deg, #18222f, #121a24);
+  border-bottom: 1px solid var(--nrp-border);
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
   flex-shrink: 0;
 }
 #nrp-root .nrp-modal-title {
@@ -1953,11 +2111,18 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  scrollbar-width: thin; scrollbar-color: #3a4a5e transparent;
+}
+#nrp-root .nrp-modal-content::-webkit-scrollbar { width: 10px; height: 10px; }
+#nrp-root .nrp-modal-content::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #3a4a5e, #2b3746);
+  border-radius: 6px; border: 2px solid transparent; background-clip: padding-box;
 }
 #nrp-root .nrp-modal-footer {
   display: flex; justify-content: flex-end; gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid #21262d; background: #0d1117;
+  padding: 11px 14px;
+  border-top: 1px solid var(--nrp-border);
+  background: linear-gradient(180deg, #101720, #0c121a);
   flex-shrink: 0;
 }
 #nrp-root .nrp-modal-footer:empty { display: none; }
@@ -1968,26 +2133,28 @@
   flex-wrap: wrap; min-width: 0; flex: 1 1 auto;
 }
 #nrp-root .nrp-badge {
-  display: inline-block; padding: 2px 7px; border-radius: 5px;
+  display: inline-block; padding: 2px 8px; border-radius: 6px;
   font-size: 11px; font-weight: 700; white-space: nowrap;
   border: 1px solid transparent;
+  box-shadow: 0 1px 0 rgba(255,255,255,.04) inset;
 }
-#nrp-root .nrp-badge-method { background: rgba(56,139,253,.15); color: #79c0ff; border-color: rgba(56,139,253,.4); }
-#nrp-root .nrp-badge-ok     { background: rgba(63,185,80,.15);  color: #3fb950; border-color: rgba(63,185,80,.4); }
-#nrp-root .nrp-badge-err    { background: rgba(248,81,73,.15);  color: #f85149; border-color: rgba(248,81,73,.4); }
-#nrp-root .nrp-badge-other  { background: rgba(110,118,129,.15);color: #c9d1d9; border-color: rgba(110,118,129,.4); }
-#nrp-root .nrp-badge-time   { background: rgba(210,153,34,.15); color: #d29922; border-color: rgba(210,153,34,.4); }
-#nrp-root .nrp-badge-frame  { background: rgba(210,168,255,.15);color: #d2a8ff; border-color: rgba(210,168,255,.4); }
-#nrp-root .nrp-badge-dur    { background: rgba(121,192,255,.15);color: #79c0ff; border-color: rgba(121,192,255,.4); }
-#nrp-root .nrp-badge-mime   { background: rgba(86,211,100,.15); color: #56d364; border-color: rgba(86,211,100,.4); }
-#nrp-root .nrp-badge-sse    { background: rgba(210,168,255,.15);color: #d2a8ff; border-color: rgba(210,168,255,.4); }
+#nrp-root .nrp-badge-method { background: linear-gradient(180deg, rgba(56,139,253,.22), rgba(56,139,253,.1)); color: #79c0ff; border-color: rgba(56,139,253,.42); }
+#nrp-root .nrp-badge-ok     { background: linear-gradient(180deg, rgba(63,185,80,.22), rgba(63,185,80,.1));  color: #3fb950; border-color: rgba(63,185,80,.42); }
+#nrp-root .nrp-badge-err    { background: linear-gradient(180deg, rgba(248,81,73,.22), rgba(248,81,73,.1));  color: #f85149; border-color: rgba(248,81,73,.42); }
+#nrp-root .nrp-badge-other  { background: linear-gradient(180deg, rgba(110,118,129,.2), rgba(110,118,129,.09)); color: #c9d1d9; border-color: rgba(110,118,129,.42); }
+#nrp-root .nrp-badge-time   { background: linear-gradient(180deg, rgba(210,153,34,.22), rgba(210,153,34,.1)); color: #d29922; border-color: rgba(210,153,34,.42); }
+#nrp-root .nrp-badge-frame  { background: linear-gradient(180deg, rgba(210,168,255,.22), rgba(210,168,255,.1));color: #d2a8ff; border-color: rgba(210,168,255,.42); }
+#nrp-root .nrp-badge-dur    { background: linear-gradient(180deg, rgba(121,192,255,.22), rgba(121,192,255,.1));color: #79c0ff; border-color: rgba(121,192,255,.42); }
+#nrp-root .nrp-badge-mime   { background: linear-gradient(180deg, rgba(86,211,100,.22), rgba(86,211,100,.1)); color: #56d364; border-color: rgba(86,211,100,.42); }
+#nrp-root .nrp-badge-sse    { background: linear-gradient(180deg, rgba(210,168,255,.22), rgba(210,168,255,.1));color: #d2a8ff; border-color: rgba(210,168,255,.42); }
 #nrp-root .nrp-badge-live   {
-  background: rgba(63,185,80,.15); color: #3fb950; border-color: rgba(63,185,80,.4);
+  background: linear-gradient(180deg, rgba(63,185,80,.24), rgba(63,185,80,.1));
+  color: #56d364; border-color: rgba(63,185,80,.45);
   animation: nrp-live-pulse 1.4s ease-in-out infinite;
 }
 @keyframes nrp-live-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .45; }
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 rgba(63,185,80,0); }
+  50% { opacity: .55; box-shadow: 0 0 12px rgba(63,185,80,.35); }
 }
 
 #nrp-root .nrp-modal-url {
@@ -2012,32 +2179,37 @@
 
 /* Params / Body 容器 */
 #nrp-root .nrp-modal-params {
-  background: #0d1117;
+  background: transparent;
   flex-shrink: 0;
 }
 
 /* 通用可折叠区块 */
 #nrp-root .nrp-section {
-  border-bottom: 1px solid #21262d;
-  background: #0d1117;
+  border-bottom: 1px solid rgba(38,50,65,.65);
+  background: transparent;
   flex-shrink: 0;
 }
 #nrp-root .nrp-section-title {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px; cursor: pointer;
-  color: #8b949e; font-size: 11px; font-weight: 700;
+  padding: 7px 14px; cursor: pointer;
+  color: var(--nrp-text-dim); font-size: 11px; font-weight: 700;
   user-select: none;
-  background: #0d1117;
+  background: linear-gradient(180deg, rgba(17,25,35,.96), rgba(13,20,29,.96));
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   position: sticky; top: 0; z-index: 1;
+  transition: color .12s, background .12s;
 }
-#nrp-root .nrp-section-title:hover { color: #c9d1d9; }
+#nrp-root .nrp-section-title:hover {
+  color: #dbe7f3; background: linear-gradient(180deg, #18222f, #121a24);
+}
 #nrp-root .nrp-section-title .nrp-caret {
   display: inline-block; width: 10px; text-align: center;
-  transition: transform .12s;
+  transition: transform .14s;
 }
 #nrp-root .nrp-section-title.nrp-collapsed .nrp-caret { transform: rotate(-90deg); }
 #nrp-root .nrp-section-content {
-  padding: 0 12px 8px 12px;
+  padding: 0 14px 9px 14px;
   font-size: 12px; color: #a5d6ff;
   white-space: pre-wrap; word-break: break-all;
 }
@@ -2045,22 +2217,22 @@
 
 #nrp-root .nrp-section-params .nrp-section-content {
   color: #d29922;
-  background: #010409;
-  padding: 8px 12px;
+  background: rgba(6,10,16,.62);
+  padding: 9px 14px;
   white-space: pre-wrap;
   word-break: break-all;
 }
 #nrp-root .nrp-section-body .nrp-section-content {
   color: #a5d6ff;
-  background: #010409;
-  padding: 8px 12px;
+  background: rgba(6,10,16,.62);
+  padding: 9px 14px;
   white-space: pre-wrap;
   word-break: break-all;
 }
 #nrp-root .nrp-section-response .nrp-section-content {
-  color: #c9d1d9;
-  background: #010409;
-  padding: 10px 12px;
+  color: var(--nrp-text);
+  background: rgba(6,10,16,.62);
+  padding: 11px 14px;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
@@ -2069,17 +2241,18 @@
 
 /* 图片预览 */
 #nrp-root .nrp-image-wrap {
-  padding: 12px;
-  background: #010409;
+  padding: 14px;
+  background: rgba(6,10,16,.62);
   display: flex; flex-direction: column; align-items: center;
   gap: 10px;
 }
 #nrp-root .nrp-image-info {
-  color: #8b949e; font-size: 11px; text-align: center;
+  color: var(--nrp-text-dim); font-size: 11px; text-align: center;
 }
 #nrp-root .nrp-image-preview {
   max-width: 100%; max-height: 400px;
-  border: 1px solid #30363d; border-radius: 6px;
+  border: 1px solid var(--nrp-border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
   background:
     linear-gradient(45deg, #1a1f27 25%, transparent 25%),
     linear-gradient(-45deg, #1a1f27 25%, transparent 25%),
@@ -2092,20 +2265,20 @@
 #nrp-root .nrp-image-fallback {
   color: #f85149; font-size: 12px;
   padding: 8px 12px; border: 1px solid rgba(248,81,73,.4);
-  border-radius: 6px; background: rgba(248,81,73,.1);
+  border-radius: 7px; background: rgba(248,81,73,.1);
 }
 
 /* 二进制文件信息 */
 #nrp-root .nrp-binary-wrap {
-  padding: 16px;
-  background: #010409;
+  padding: 18px;
+  background: rgba(6,10,16,.62);
   display: flex; flex-direction: column; align-items: flex-start;
   gap: 10px;
 }
-#nrp-root .nrp-binary-icon { font-size: 28px; line-height: 1; color: #79c0ff; }
+#nrp-root .nrp-binary-icon { font-size: 30px; line-height: 1; color: #79c0ff; }
 #nrp-root .nrp-binary-title { color: #e6edf3; font-size: 13px; font-weight: 700; }
 #nrp-root .nrp-binary-meta {
-  color: #8b949e; font-size: 12px;
+  color: var(--nrp-text-dim); font-size: 12px;
   white-space: pre-wrap; word-break: break-all;
 }
 
@@ -2156,9 +2329,21 @@
 #nrp-root .nrp-store-view-textarea { flex: 1 1 auto; min-height: 0; height: auto; resize: none; }
 #nrp-root .nrp-store-view-tabs { display: none; }
 #nrp-root .nrp-store-view-hl {
-  background: #010409; border: 1px solid #30363d; border-radius: 5px;
-  padding: 8px 10px; overflow: auto; margin: 0;
+  background: rgba(6,10,16,.75); border: 1px solid var(--nrp-border); border-radius: 7px;
+  padding: 10px 12px; overflow: auto; margin: 0;
   flex: 1 1 auto; min-height: 0;
+}
+
+/* ============ 动效偏好 ============ */
+@media (prefers-reduced-motion: reduce) {
+  #nrp-root *,
+  #nrp-root *::before,
+  #nrp-root *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ============ 移动端适配（<=768px） ============ */
@@ -2302,80 +2487,65 @@
     }
   ];
 
-  function buildSlowThresholdControl() {
-    const wrap = h('div', { class: 'nrp-slow-threshold', title: '慢请求阈值（毫秒）' });
+  function buildThresholdControl(opts) {
+    const wrap = h('div', { class: 'nrp-slow-threshold', title: opts.title });
     wrap.appendChild(h('span', { class: 'nrp-slow-threshold-label' }, '≥'));
-    slowInputEl = h('input', {
-      class: 'nrp-slow-input', type: 'number', min: '0', step: '100',
-      value: String(slowThreshold)
-    });
-    wrap.appendChild(slowInputEl);
-    wrap.appendChild(h('span', { class: 'nrp-slow-unit' }, 'ms'));
 
-    slowInputEl.addEventListener('input', function () {
-      const v = parseInt(slowInputEl.value, 10);
-      if (isNaN(v) || v < 0) return;
-      slowThreshold = v;
-      try { localStorage.setItem(LS_KEY_SLOW, String(v)); } catch (e) {}
-      scheduleRender();
-    });
-    slowInputEl.addEventListener('blur', function () {
-      const v = parseInt(slowInputEl.value, 10);
-      if (isNaN(v) || v < 0) slowInputEl.value = String(slowThreshold);
-      else { slowThreshold = v; slowInputEl.value = String(v); }
-    });
-    return wrap;
-  }
-
-  function buildLargeResThresholdControl() {
-    const wrap = h('div', { class: 'nrp-slow-threshold', title: '资源大小阈值（KB）' });
-    wrap.appendChild(h('span', { class: 'nrp-slow-threshold-label' }, '≥'));
     const input = h('input', {
-      class: 'nrp-slow-input', type: 'number', min: '0', step: '10',
-      value: String(Math.round(largeResThreshold / 1024))
+      class: 'nrp-slow-input', type: 'number', min: '0',
+      step: String(opts.step || 1), value: String(opts.displayValue())
     });
     wrap.appendChild(input);
-    wrap.appendChild(h('span', { class: 'nrp-slow-unit' }, 'KB'));
+    wrap.appendChild(h('span', { class: 'nrp-slow-unit' }, opts.unit));
 
     function commit() {
       const v = parseFloat(input.value);
-      if (isNaN(v) || v < 0) return;
-      largeResThreshold = Math.round(v * 1024);
-      try { localStorage.setItem(LS_KEY_LARGE_RES, String(largeResThreshold)); } catch (e) {}
-      scheduleRender();
+      if (isNaN(v) || v < 0) return false;
+      opts.commit(v);
+      return true;
     }
-    input.addEventListener('input', commit);
+
+    input.addEventListener('input', function () {
+      if (commit()) scheduleRender();
+    });
     input.addEventListener('blur', function () {
-      const v = parseFloat(input.value);
-      if (isNaN(v) || v < 0) input.value = String(Math.round(largeResThreshold / 1024));
-      else { largeResThreshold = Math.round(v * 1024); input.value = String(Math.round(largeResThreshold / 1024)); }
+      commit();
+      input.value = String(opts.displayValue());
     });
     return wrap;
   }
 
-  function buildResSlowThresholdControl() {
-    const wrap = h('div', { class: 'nrp-slow-threshold', title: '资源慢请求阈值（毫秒）' });
-    wrap.appendChild(h('span', { class: 'nrp-slow-threshold-label' }, '≥'));
-    const input = h('input', {
-      class: 'nrp-slow-input', type: 'number', min: '0', step: '100',
-      value: String(resSlowThreshold)
+  function buildSlowThresholdControl() {
+    return buildThresholdControl({
+      title: '慢请求阈值（毫秒）', unit: 'ms', step: 100,
+      displayValue: function () { return slowThreshold; },
+      commit: function (v) {
+        slowThreshold = Math.round(v);
+        saveSetting(LS_KEY_SLOW, slowThreshold);
+      }
     });
-    wrap.appendChild(input);
-    wrap.appendChild(h('span', { class: 'nrp-slow-unit' }, 'ms'));
+  }
 
-    input.addEventListener('input', function () {
-      const v = parseInt(input.value, 10);
-      if (isNaN(v) || v < 0) return;
-      resSlowThreshold = v;
-      try { localStorage.setItem(LS_KEY_RES_SLOW, String(v)); } catch (e) {}
-      scheduleRender();
+  function buildLargeResThresholdControl() {
+    return buildThresholdControl({
+      title: '资源大小阈值（KB）', unit: 'KB', step: 10,
+      displayValue: function () { return Math.round(largeResThreshold / 1024); },
+      commit: function (v) {
+        largeResThreshold = Math.round(v * 1024);
+        saveSetting(LS_KEY_LARGE_RES, largeResThreshold);
+      }
     });
-    input.addEventListener('blur', function () {
-      const v = parseInt(input.value, 10);
-      if (isNaN(v) || v < 0) input.value = String(resSlowThreshold);
-      else { resSlowThreshold = v; input.value = String(v); }
+  }
+
+  function buildResSlowThresholdControl() {
+    return buildThresholdControl({
+      title: '资源慢请求阈值（毫秒）', unit: 'ms', step: 100,
+      displayValue: function () { return resSlowThreshold; },
+      commit: function (v) {
+        resSlowThreshold = Math.round(v);
+        saveSetting(LS_KEY_RES_SLOW, resSlowThreshold);
+      }
     });
-    return wrap;
   }
 
   function getInlineChipControl(gkey, ivalue) {
@@ -2479,12 +2649,9 @@
 
     groupSelectEl.addEventListener('change', function () {
       groupBy = groupSelectEl.value || '';
-      if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
-      const st = tabState[currentTab];
+      const st = getTabState();
       st.groupBy = groupBy;
-      if (currentTab === TAB_NETWORK) {
-        try { localStorage.setItem(LS_KEY_GROUP, groupBy); } catch (e) {}
-      }
+      if (currentTab === TAB_NETWORK) saveSetting(LS_KEY_GROUP, groupBy);
       collapsedGroups = {};
       st.collapsed = collapsedGroups;
       scheduleRender();
@@ -2495,43 +2662,28 @@
   }
 
   function countNetworkRecords() {
-    let n = 0;
-    for (let i = 0; i < records.length; i++) {
-      if (records[i].kind !== 'resource') n++;
-    }
-    return n;
+    return records.length - countByKind('resource');
+  }
+
+  function setTabButtonState(btn, active, count) {
+    if (!btn) return;
+    btn.classList.toggle('nrp-tab-active', active);
+    const c = btn.querySelector('.nrp-tab-count');
+    if (c) c.textContent = String(count);
   }
 
   function updateTabButtons() {
-    if (netTabBtnEl) {
-      netTabBtnEl.classList.toggle('nrp-tab-active', currentTab === TAB_NETWORK);
-      const c = netTabBtnEl.querySelector('.nrp-tab-count');
-      if (c) c.textContent = String(countNetworkRecords());
-    }
-    if (resTabBtnEl) {
-      resTabBtnEl.classList.toggle('nrp-tab-active', currentTab === TAB_RESOURCE);
-      const c = resTabBtnEl.querySelector('.nrp-tab-count');
-      if (c) c.textContent = String(countByKind('resource'));
-    }
-    if (typeof wsTabBtnEl !== 'undefined' && wsTabBtnEl) {
-      wsTabBtnEl.classList.toggle('nrp-tab-active', currentTab === TAB_WS);
-      const c2 = wsTabBtnEl.querySelector('.nrp-tab-count');
-      if (c2) c2.textContent = String(wsRecords.length);
-    }
-    if (storeTabBtnEl) {
-      storeTabBtnEl.classList.toggle('nrp-tab-active', currentTab === TAB_STORAGE);
-      const c = storeTabBtnEl.querySelector('.nrp-tab-count');
-      if (c) c.textContent = String(countStorageEntries());
-    }
+    setTabButtonState(netTabBtnEl, currentTab === TAB_NETWORK, countNetworkRecords());
+    setTabButtonState(resTabBtnEl, currentTab === TAB_RESOURCE, countByKind('resource'));
+    setTabButtonState(wsTabBtnEl, currentTab === TAB_WS, wsRecords.length);
+    setTabButtonState(storeTabBtnEl, currentTab === TAB_STORAGE, countStorageEntries());
   }
 
   function switchTab(tab) {
     if (tab === currentTab) return;
     if (tab !== TAB_NETWORK && tab !== TAB_RESOURCE && tab !== TAB_STORAGE && tab !== TAB_WS) return;
 
-    if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
-    if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
-    const st = tabState[currentTab];
+    const st = getTabState();
     st.search = searchEl ? searchEl.value : '';
     if (currentTab !== TAB_STORAGE && currentTab !== TAB_WS) {
       st.groupBy = groupBy;
@@ -2539,9 +2691,7 @@
     }
 
     currentTab = tab;
-    if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
-    if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
-    const next = tabState[currentTab];
+    const next = getTabState(tab);
     if (tab !== TAB_STORAGE && tab !== TAB_WS) {
       groupBy = next.groupBy || '';
       collapsedGroups = next.collapsed || {};
@@ -2557,19 +2707,21 @@
     }
     fillGroupOptions();
 
-    if (groupWrapEl) groupWrapEl.style.display = tab === TAB_NETWORK ? '' : 'none';
-    if (netTableWrapEl) netTableWrapEl.style.display = tab === TAB_NETWORK ? '' : 'none';
-    if (resTableWrapEl) resTableWrapEl.style.display = tab === TAB_RESOURCE ? '' : 'none';
-    if (typeof wsTableWrapEl !== 'undefined' && wsTableWrapEl) wsTableWrapEl.style.display = tab === TAB_WS ? '' : 'none';
-    if (storeWrapEl) storeWrapEl.style.display = tab === TAB_STORAGE ? '' : 'none';
-    if (chipsEl) chipsEl.style.display = tab === TAB_NETWORK ? '' : 'none';
-    if (chipsResEl) chipsResEl.style.display = tab === TAB_RESOURCE ? '' : 'none';
-    if (clearBtnEl) clearBtnEl.style.display = (tab === TAB_STORAGE || tab === TAB_WS) ? 'none' : '';
-    if (exportBtnEl) exportBtnEl.style.display = (tab === TAB_STORAGE || tab === TAB_WS) ? 'none' : '';
-    if (typeof harBtnEl !== 'undefined' && harBtnEl) harBtnEl.style.display = (tab === TAB_STORAGE || tab === TAB_WS) ? 'none' : '';
-    if (tab === TAB_RESOURCE) tbodyEl = resTbodyEl;
-    else if (tab === TAB_NETWORK) tbodyEl = netTbodyEl;
-    else tbodyEl = null;
+    toggleDisplay(groupWrapEl, tab === TAB_NETWORK);
+    toggleDisplay(netTableWrapEl, tab === TAB_NETWORK);
+    toggleDisplay(resTableWrapEl, tab === TAB_RESOURCE);
+    toggleDisplay(wsTableWrapEl, tab === TAB_WS);
+    toggleDisplay(storeWrapEl, tab === TAB_STORAGE);
+    toggleDisplay(chipsEl, tab === TAB_NETWORK);
+    toggleDisplay(chipsResEl, tab === TAB_RESOURCE);
+
+    const hideTools = tab === TAB_STORAGE || tab === TAB_WS;
+    toggleDisplay(clearBtnEl, !hideTools);
+    toggleDisplay(exportBtnEl, !hideTools);
+    toggleDisplay(harBtnEl, !hideTools);
+
+    tbodyEl = tab === TAB_RESOURCE ? resTbodyEl
+        : (tab === TAB_NETWORK ? netTbodyEl : null);
 
     updateTabButtons();
     render();
@@ -2608,7 +2760,7 @@
     }, '—');
     clearBtnEl = h('button', { class: 'nrp-btn', type: 'button', title: 'Clear records of the current tab' }, 'Clear');
     exportBtnEl = h('button', { class: 'nrp-btn', type: 'button', title: 'Export filtered records of the current tab as JSON' }, 'Export');
-    const harBtnEl = h('button', { class: 'nrp-btn', type: 'button', title: 'Export filtered network records as HAR' }, 'HAR');
+    harBtnEl = h('button', { class: 'nrp-btn', type: 'button', title: 'Export filtered network records as HAR' }, 'HAR');
     fsBtn = h('button', { class: 'nrp-btn', type: 'button', title: 'Fullscreen' }, '⤢');
     const hideBtn = h('button', { class: 'nrp-btn', type: 'button', title: 'Hide panel' }, '×');
 
@@ -2730,12 +2882,10 @@
     });
 
     /* 兼容别名：原渲染函数中的引用直接指向工厂内部节点 */
-    overlayEl = netModal.overlay;
     modalHeadlineEl = netModal.titleEl;
     modalContentEl = netModal.body;
 
     /* ---------- Storage 新增条目模态框 ---------- */
-    storeAddTitleEl = h('span', null, '新增条目');
     storeAddKeyEl = h('input', {
       class: 'nrp-store-add-input', type: 'text',
       placeholder: 'Key（键名）', spellcheck: 'false'
@@ -2751,7 +2901,7 @@
       overlayClass: 'nrp-store-add-overlay',
       modalClass: 'nrp-store-add-modal',
       titleClass: 'nrp-store-add-title',
-      title: storeAddTitleEl,
+      title: '新增条目',
       body: [
         h('label', { class: 'nrp-store-add-label' }, 'Key'),
         storeAddKeyEl,
@@ -2760,10 +2910,8 @@
       ],
       footer: [storeAddSaveEl, storeAddCancelEl]
     });
-    storeAddOverlayEl = storeAddModal.overlay;
 
     /* ---------- Storage 查看/编辑模态框 ---------- */
-    storeViewTitleEl = h('span', null, '查看 / 编辑条目');
     storeViewKeyEl = h('input', {
       class: 'nrp-store-add-input', type: 'text',
       placeholder: 'Key（键名）', spellcheck: 'false'
@@ -2804,7 +2952,7 @@
       modalClass: 'nrp-store-view-modal',
       bodyClass: 'nrp-store-view-body',
       titleClass: 'nrp-store-add-title',
-      title: storeViewTitleEl,
+      title: '查看 / 编辑条目',
       body: [
         h('label', { class: 'nrp-store-add-label' }, 'Key'),
         storeViewKeyEl,
@@ -2814,7 +2962,6 @@
       footer: [storeViewDeleteEl, storeViewCloseEl, storeViewSaveEl],
       showClose: false
     });
-    storeViewOverlayEl = storeViewModal.overlay;
 
     rootEl = h('div', { id: 'nrp-root' }, [
       panelEl, fab,
@@ -2845,7 +2992,7 @@
         if (currentTab === TAB_STORAGE) renderStorage();
       });
     });
-    storeToolsEl.children[0].addEventListener('click', addStorageEntry);
+    storeToolsEl.children[0].addEventListener('click', openAddStorageModal);
     storeToolsEl.children[1].addEventListener('click', function () {
       if (currentTab === TAB_STORAGE) renderStorage();
     });
@@ -2891,14 +3038,12 @@
       }
       records = kept;
       collapsedGroups = {};
-      if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
-      if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
-      tabState[currentTab].collapsed = collapsedGroups;
+      getTabState().collapsed = collapsedGroups;
       render();
     });
 
     exportBtnEl.addEventListener('click', exportJSON);
-    if (typeof harBtnEl !== 'undefined' && harBtnEl) harBtnEl.addEventListener('click', exportHAR);
+    if (harBtnEl) harBtnEl.addEventListener('click', exportHAR);
     fsBtn.addEventListener('click', toggleFullscreen);
 
     hideBtn.addEventListener('click', function () {
@@ -2972,21 +3117,16 @@
 
     if (!terms.length) return true;
 
-    const hay = (
+    return matchesTerms(
         r.url + ' ' + (r.resType || '') + ' ' + resTypeLabel(r.resType) + ' ' +
         (r.initiatorType || '') + ' ' + (r.cache || '') + ' ' + (r.protocol || '') + ' ' +
-        (r.duration == null ? '' : r.duration) + ' ' + (r.size || 0) + ' ' + (r.frameUrl || '')
-    ).toLowerCase();
-    for (let i = 0; i < terms.length; i++) {
-      if (hay.indexOf(terms[i]) === -1) return false;
-    }
-    return true;
+        (r.duration == null ? '' : r.duration) + ' ' + (r.size || 0) + ' ' + (r.frameUrl || ''),
+        terms
+    );
   }
 
   function getFiltered() {
-    const raw = searchEl && searchEl.value ? searchEl.value : '';
-    const q = raw.trim().toLowerCase();
-    const terms = q ? q.split(/\s+/).filter(Boolean) : [];
+    const terms = searchTerms();
     const isRes = currentTab === TAB_RESOURCE;
     const out = [];
     for (let i = 0; i < records.length; i++) {
@@ -3013,6 +3153,19 @@
     return td;
   }
 
+  function clickableCell(text, cls, title, onOpen) {
+    const td = cell(text, 'nrp-cell-clickable' + (cls ? ' ' + cls : ''), title);
+    td.addEventListener('click', function (e) {
+      e.stopPropagation();
+      onOpen();
+    });
+    return td;
+  }
+
+  function headerPreview(headers) {
+    return headers ? headers.split('\n').filter(Boolean).slice(0, 2).join('; ') : '';
+  }
+
   function buildRow(r) {
     const tr = document.createElement('tr');
     tr.className = 'nrp-data-row';
@@ -3023,39 +3176,33 @@
     const st = statusInfo(r);
     tr.appendChild(cell(st.text, st.cls, 'Status: ' + st.text));
 
-    const urlTd = cell(r.url, 'nrp-cell-clickable', r.url);
-    urlTd.addEventListener('click', function (e) {
-      e.stopPropagation(); openFieldModal(r, 'url');
-    });
-    tr.appendChild(urlTd);
+    tr.appendChild(clickableCell(r.url, '', r.url, function () {
+      openFieldModal(r, 'url');
+    }));
 
-    const reqHeaderPreview = r.reqHeaders ? r.reqHeaders.split('\n').filter(Boolean).slice(0, 2).join('; ') : '';
-    const reqHeaderTd = cell(reqHeaderPreview, 'nrp-cell-clickable nrp-cell-headers', r.reqHeaders || '(no request headers)');
-    reqHeaderTd.addEventListener('click', function (e) {
-      e.stopPropagation(); openFieldModal(r, 'req-headers');
-    });
-    tr.appendChild(reqHeaderTd);
+    tr.appendChild(clickableCell(
+        headerPreview(r.reqHeaders), 'nrp-cell-headers',
+        r.reqHeaders || '(no request headers)', function () {
+          openFieldModal(r, 'req-headers');
+        }
+    ));
 
     const params = r.params || '';
-    const paramsTd = cell(params, 'nrp-cell-clickable nrp-cell-query', params);
-    paramsTd.addEventListener('click', function (e) {
-      e.stopPropagation(); openFieldModal(r, 'params');
-    });
-    tr.appendChild(paramsTd);
+    tr.appendChild(clickableCell(params, 'nrp-cell-query', params, function () {
+      openFieldModal(r, 'params');
+    }));
 
     const bodyStr = r.body || '';
-    const bodyTd = cell(bodyStr, 'nrp-cell-clickable nrp-cell-body', bodyStr);
-    bodyTd.addEventListener('click', function (e) {
-      e.stopPropagation(); openFieldModal(r, 'body');
-    });
-    tr.appendChild(bodyTd);
+    tr.appendChild(clickableCell(bodyStr, 'nrp-cell-body', bodyStr, function () {
+      openFieldModal(r, 'body');
+    }));
 
-    const respHeaderPreview = r.respHeaders ? r.respHeaders.split('\n').filter(Boolean).slice(0, 2).join('; ') : '';
-    const respHeaderTd = cell(respHeaderPreview, 'nrp-cell-clickable nrp-cell-headers', r.respHeaders || '(no response headers)');
-    respHeaderTd.addEventListener('click', function (e) {
-      e.stopPropagation(); openFieldModal(r, 'resp-headers');
-    });
-    tr.appendChild(respHeaderTd);
+    tr.appendChild(clickableCell(
+        headerPreview(r.respHeaders), 'nrp-cell-headers',
+        r.respHeaders || '(no response headers)', function () {
+          openFieldModal(r, 'resp-headers');
+        }
+    ));
 
     let preview;
     let previewCls = 'nrp-dim';
@@ -3071,11 +3218,9 @@
     } else {
       preview = (r.response || '').replace(/\s+/g, ' ').slice(0, 400);
     }
-    const respTd = cell(preview, 'nrp-cell-clickable ' + previewCls, preview.slice(0, 2000));
-    respTd.addEventListener('click', function (e) {
-      e.stopPropagation(); openFieldModal(r, 'response');
-    });
-    tr.appendChild(respTd);
+    tr.appendChild(clickableCell(preview, previewCls, preview.slice(0, 2000), function () {
+      openFieldModal(r, 'response');
+    }));
 
     const durText = r.duration != null ? formatDuration(r.duration) : '';
     const durCls = 'nrp-dim' + (r.duration != null && r.duration >= slowThreshold ? ' nrp-st-err' : '');
@@ -3199,6 +3344,7 @@
     if (modalContentEl) modalContentEl.scrollTop = 0;
     currentModalRecord = null;
     currentModalExtra = null;
+    currentModalField = null;
 
     buildResourceHeadline(r);
 
@@ -3320,16 +3466,12 @@
     else frag = renderFlat(filtered);
 
     if (!filtered.length) {
-      const tr = document.createElement('tr');
-      tr.className = 'nrp-empty-row';
-      const td = document.createElement('td');
-      td.className = 'nrp-empty';
-      td.colSpan = isRes ? 6 : 10;
-      td.textContent = total
-          ? 'No records match the current filter.'
-          : (isRes ? 'Waiting for static resources…' : 'Waiting for network requests…');
-      tr.appendChild(td);
-      frag.appendChild(tr);
+      frag.appendChild(emptyRow(
+          isRes ? 6 : 10,
+          total
+              ? 'No records match the current filter.'
+              : (isRes ? 'Waiting for static resources…' : 'Waiting for network requests…')
+      ));
     }
 
     clearEl(tbodyEl);
@@ -3347,12 +3489,15 @@
     });
   }
 
+  function getStorageArea() {
+    return storeSubTab === 'local' ? localStorage : sessionStorage;
+  }
+
   function getStorageEntries() {
     try {
       if (storeSubTab === 'cookie') {
         const out = [];
-        const src = document.cookie || '';
-        const pairs = src.split(';');
+        const pairs = (document.cookie || '').split(';');
         for (let i = 0; i < pairs.length; i++) {
           const pair = pairs[i];
           if (!pair) continue;
@@ -3363,7 +3508,7 @@
         }
         return out;
       }
-      const store = storeSubTab === 'local' ? localStorage : sessionStorage;
+      const store = getStorageArea();
       const out = [];
       for (let i = 0; i < store.length; i++) {
         const k = store.key(i);
@@ -3384,8 +3529,7 @@
       if (storeSubTab === 'cookie') {
         document.cookie = name + '=' + encodeURIComponent(value) + '; path=/';
       } else {
-        const store = storeSubTab === 'local' ? localStorage : sessionStorage;
-        store.setItem(name, value);
+        getStorageArea().setItem(name, value);
       }
     } catch (e) { /* ignore */ }
   }
@@ -3395,8 +3539,7 @@
       if (storeSubTab === 'cookie') {
         document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
       } else {
-        const store = storeSubTab === 'local' ? localStorage : sessionStorage;
-        store.removeItem(name);
+        getStorageArea().removeItem(name);
       }
     } catch (e) { /* ignore */ }
   }
@@ -3420,10 +3563,6 @@
     setStorageEntry(n, storeAddValueEl.value || '');
     closeAddStorageModal();
     renderStorage();
-  }
-
-  function addStorageEntry() {
-    openAddStorageModal();
   }
 
   function updateStoreViewHighlight() {
@@ -3547,19 +3686,12 @@
   function renderStorage() {
     if (!storeTableWrapEl) return;
 
-    const q = (searchEl && searchEl.value ? searchEl.value : '').trim().toLowerCase();
-    const terms = q ? q.split(/\s+/).filter(Boolean) : [];
-
+    const terms = searchTerms();
     let entries;
     try { entries = getStorageEntries(); } catch (e) { entries = []; }
 
     const filtered = entries.filter(function (e) {
-      if (!terms.length) return true;
-      const hay = (e.name + ' ' + e.value).toLowerCase();
-      for (let i = 0; i < terms.length; i++) {
-        if (hay.indexOf(terms[i]) === -1) return false;
-      }
-      return true;
+      return matchesTerms(e.name + ' ' + e.value, terms);
     });
 
     if (statsEl) statsEl.textContent = filtered.length + ' / ' + entries.length;
@@ -3580,16 +3712,13 @@
     const tbody = h('tbody');
 
     if (!filtered.length) {
-      const tr = document.createElement('tr');
-      tr.className = 'nrp-store-empty-row';
-      const td = document.createElement('td');
-      td.className = 'nrp-store-empty';
-      td.colSpan = 3;
-      td.textContent = entries.length
-          ? '没有匹配当前搜索的条目。'
-          : ('当前 ' + STORE_SUB_LABELS[storeSubTab] + ' 为空。');
-      tr.appendChild(td);
-      tbody.appendChild(tr);
+      tbody.appendChild(emptyRow(
+          3,
+          entries.length
+              ? '没有匹配当前搜索的条目。'
+              : ('当前 ' + STORE_SUB_LABELS[storeSubTab] + ' 为空。'),
+          'nrp-store-empty-row', 'nrp-store-empty'
+      ));
     } else {
       filtered.forEach(function (e) { tbody.appendChild(buildStorageRow(e)); });
     }
@@ -3603,16 +3732,11 @@
 
   function renderWS() {
     if (!wsTableWrapEl) return;
-    const q = (searchEl && searchEl.value ? searchEl.value : '').trim().toLowerCase();
-    const terms = q ? q.split(/\s+/).filter(Boolean) : [];
+    const terms = searchTerms();
     let list = wsRecords.slice();
     if (terms.length) {
       list = list.filter(function (r) {
-        const hay = (r.url + ' ' + (r.state || '')).toLowerCase();
-        for (let i = 0; i < terms.length; i++) {
-          if (hay.indexOf(terms[i]) === -1) return false;
-        }
-        return true;
+        return matchesTerms(r.url + ' ' + (r.state || ''), terms);
       });
     }
     if (statsEl) statsEl.textContent = list.length + ' / ' + wsRecords.length;
@@ -3620,14 +3744,12 @@
     if (!tbody) return;
     clearEl(tbody);
     if (!list.length) {
-      const tr = document.createElement('tr');
-      tr.className = 'nrp-empty-row';
-      const td = document.createElement('td');
-      td.className = 'nrp-empty';
-      td.colSpan = 5;
-      td.textContent = wsRecords.length ? 'No WebSocket connections match the filter.' : 'Waiting for WebSocket connections...';
-      tr.appendChild(td);
-      tbody.appendChild(tr);
+      tbody.appendChild(emptyRow(
+          5,
+          wsRecords.length
+              ? 'No WebSocket connections match the filter.'
+              : 'Waiting for WebSocket connections...'
+      ));
       return;
     }
     for (let i = list.length - 1; i >= 0; i--) {
@@ -3636,9 +3758,7 @@
       tr.className = 'nrp-data-row';
       tr.appendChild(cell(formatTime(r.time), 'nrp-cell-time', formatFullTime(r.time)));
       tr.appendChild(cell(r.state || '', 'nrp-cell-method'));
-      const urlTd = cell(r.url, 'nrp-cell-clickable');
-      urlTd.addEventListener('click', function () { openWSModal(r); });
-      tr.appendChild(urlTd);
+      tr.appendChild(clickableCell(r.url, '', r.url, function () { openWSModal(r); }));
       tr.appendChild(cell(String((r.messages && r.messages.length) || 0), 'nrp-cell-method'));
       const info = r.state === 'closed' ? ('closed' + (r.closeCode != null ? ' ' + r.closeCode : '')) : (r.state || '');
       tr.appendChild(cell(info, 'nrp-dim'));
@@ -3651,12 +3771,12 @@
     if (modalContentEl) modalContentEl.scrollTop = 0;
     currentModalRecord = null;
     currentModalExtra = null;
+    currentModalField = null;
     clearEl(modalHeadlineEl);
-    modalHeadlineEl.appendChild(h('span', { class: 'nrp-badge nrp-badge-other' }, 'WebSocket'));
-    modalHeadlineEl.appendChild(h('span', { class: 'nrp-badge nrp-badge-mime' }, r.state || ''));
+    modalHeadlineEl.appendChild(addBadge('nrp-badge-other', 'WebSocket'));
+    modalHeadlineEl.appendChild(addBadge('nrp-badge-mime', r.state || ''));
     modalHeadlineEl.appendChild(h('span', { class: 'nrp-modal-url', title: r.url }, r.url));
-    clearEl(modalParamsEl);
-    modalParamsEl.style.display = 'none';
+    clearAndHide(modalParamsEl);
     clearEl(modalHeadersEl);
     modalHeadersEl.style.display = '';
     const info = [
@@ -3674,9 +3794,8 @@
     if (r.messages && r.messages.length) {
       for (let i = 0; i < r.messages.length; i++) {
         const m = r.messages[i];
-        const d = new Date(m.time);
-        const ts = pad(d.getHours(),2)+':'+pad(d.getMinutes(),2)+':'+pad(d.getSeconds(),2)+'.'+pad(d.getMilliseconds(),3);
-        msgText += '[' + ts + '] ' + (m.dir === 'out' ? '→ SEND' : '← RECV') + '\n' + m.data + '\n\n';
+        msgText += '[' + formatTime(m.time) + '] ' +
+            (m.dir === 'out' ? '→ SEND' : '← RECV') + '\n' + m.data + '\n\n';
       }
     } else {
       msgText = '(no messages)';
@@ -3684,8 +3803,7 @@
     currentCopyText = msgText;
     const msec = makeSection('Messages (' + ((r.messages && r.messages.length) || 0) + ')', msgText, 'nrp-section-response');
     if (msec) modalResponseEl.appendChild(msec);
-    copyBtn.textContent = 'Copy';
-    if (netModal) netModal.open();
+    openNetworkModal();
   }
 
 
@@ -3810,20 +3928,17 @@
 
   function fillHeadersBlockFor(r, mode) {
     clearEl(modalHeadersEl);
-    const parts = [];
+    const sections = [];
     if (mode !== 'resp') {
-      parts.push(makeSection(
-          'Request Headers (' + (r.reqHeaders ? r.reqHeaders.split('\n').filter(Boolean).length : 0) + ')',
-          r.reqHeaders || '(no request headers)'
-      ));
+      sections.push(['Request Headers', r.reqHeaders, '(no request headers)']);
     }
     if (mode !== 'req') {
-      parts.push(makeSection(
-          'Response Headers (' + (r.respHeaders ? r.respHeaders.split('\n').filter(Boolean).length : 0) + ')',
-          r.respHeaders || '(no response headers)'
-      ));
+      sections.push(['Response Headers', r.respHeaders, '(no response headers)']);
     }
-    parts.forEach(function (sec) { if (sec) modalHeadersEl.appendChild(sec); });
+    sections.forEach(function (s) {
+      const sec = makeSection(s[0] + ' (' + countLines(s[1]) + ')', s[1] || s[2]);
+      if (sec) modalHeadersEl.appendChild(sec);
+    });
     modalHeadersEl.style.display = '';
   }
 
@@ -4032,47 +4147,44 @@
     return 'Response';
   }
 
+  function refillSection(container, fill) {
+    const oldTitle = container.querySelector('.nrp-section-title');
+    const collapsed = oldTitle ? oldTitle.classList.contains('nrp-collapsed') : false;
+    fill();
+    if (collapsed) {
+      const newTitle = container.querySelector('.nrp-section-title');
+      if (newTitle) newTitle.classList.add('nrp-collapsed');
+    }
+  }
+
   function refreshStreamModal(rec) {
     if (!currentModalRecord || currentModalRecord !== rec) return;
     if (!netModal || !netModal.isOpen) return;
 
     buildHeadline(rec, currentModalExtra);
 
-    if (currentModalExtra === 'resp-headers') {
-      const oldTitle = modalHeadersEl.querySelector('.nrp-section-title');
-      const collapsed = oldTitle ? oldTitle.classList.contains('nrp-collapsed') : false;
-      currentCopyText = rec.respHeaders || '';
-      fillRespHeadersBlock(rec);
-      if (collapsed) {
-        const newTitle = modalHeadersEl.querySelector('.nrp-section-title');
-        if (newTitle) newTitle.classList.add('nrp-collapsed');
-      }
-      return;
-    }
-
-    if (currentModalExtra === 'req-headers') {
-      const oldTitle = modalHeadersEl.querySelector('.nrp-section-title');
-      const collapsed = oldTitle ? oldTitle.classList.contains('nrp-collapsed') : false;
-      currentCopyText = rec.reqHeaders || '';
-      fillReqHeadersBlock(rec);
-      if (collapsed) {
-        const newTitle = modalHeadersEl.querySelector('.nrp-section-title');
-        if (newTitle) newTitle.classList.add('nrp-collapsed');
-      }
-      return;
-    }
-
-    if (currentModalExtra === 'headers') {
-      fillHeadersBlock(rec);
-      return;
-    }
-
-    const oldTitle = modalResponseEl.querySelector('.nrp-section-title');
-    const collapsed = oldTitle ? oldTitle.classList.contains('nrp-collapsed') : false;
-    fillResponseBlock(rec);
-    if (collapsed) {
-      const newTitle = modalResponseEl.querySelector('.nrp-section-title');
-      if (newTitle) newTitle.classList.add('nrp-collapsed');
+    switch (currentModalField) {
+      case 'resp-headers':
+        currentCopyText = rec.respHeaders || '';
+        refillSection(modalHeadersEl, function () { fillRespHeadersBlock(rec); });
+        return;
+      case 'req-headers':
+        currentCopyText = rec.reqHeaders || '';
+        refillSection(modalHeadersEl, function () { fillReqHeadersBlock(rec); });
+        return;
+      case 'headers':
+        fillHeadersBlock(rec);
+        return;
+      case 'params':
+      case 'body':
+        currentCopyText = (currentModalField === 'params' ? rec.params : rec.body) || '';
+        refillSection(modalParamsEl, function () { fillParamsBlock(rec, currentModalField); });
+        return;
+      case 'url':
+        currentCopyText = rec.url || '';
+        return;
+      default:
+        refillSection(modalResponseEl, function () { fillResponseBlock(rec); });
     }
   }
 
@@ -4101,6 +4213,7 @@
 
     currentModalRecord = r;
     currentModalExtra = null;
+    currentModalField = null;
 
     buildHeadline(r, null);
     showEl(modalParamsEl);
@@ -4113,89 +4226,96 @@
     openNetworkModal();
   }
 
+  const FIELD_VIEWS = {
+    response: {
+      label: 'Response',
+      render: function (r) {
+        showEl(modalResponseEl);
+        fillResponseBlock(r);
+      }
+    },
+    'req-headers': {
+      label: 'Request Headers',
+      copy: function (r) { return r.reqHeaders || ''; },
+      render: function (r) {
+        showEl(modalHeadersEl);
+        fillReqHeadersBlock(r);
+      }
+    },
+    'resp-headers': {
+      label: 'Response Headers',
+      copy: function (r) { return r.respHeaders || ''; },
+      render: function (r) {
+        showEl(modalHeadersEl);
+        fillRespHeadersBlock(r);
+      }
+    },
+    headers: {
+      label: 'Headers',
+      copy: function (r) {
+        const parts = [];
+        if (r.reqHeaders) parts.push('Request Headers:\n' + r.reqHeaders);
+        if (r.respHeaders) parts.push('Response Headers:\n' + r.respHeaders);
+        return parts.length ? parts.join('\n\n') : '(no headers)';
+      },
+      render: function (r) {
+        const sec = makeSection('Headers', FIELD_VIEWS.headers.copy(r));
+        clearEl(modalHeadersEl);
+        if (sec) modalHeadersEl.appendChild(sec);
+        showEl(modalHeadersEl);
+        showEl(modalResponseEl);
+        fillResponseBlock(r);
+      }
+    },
+    params: {
+      label: 'Params',
+      copy: function (r) { return r.params || ''; },
+      render: function (r) {
+        showEl(modalParamsEl);
+        fillParamsBlock(r, 'params');
+      }
+    },
+    body: {
+      label: 'Body',
+      copy: function (r) { return r.body || ''; },
+      render: function (r) {
+        showEl(modalParamsEl);
+        fillParamsBlock(r, 'body');
+      }
+    },
+    url: {
+      label: 'URL',
+      copy: function (r) { return r.url || '(empty url)'; },
+      render: function (r) {
+        const sec = makeSection('URL', FIELD_VIEWS.url.copy(r));
+        clearEl(modalResponseEl);
+        if (sec) modalResponseEl.appendChild(sec);
+        showEl(modalResponseEl);
+      }
+    }
+  };
+
   function openFieldModal(r, field) {
+    const view = FIELD_VIEWS[field] || FIELD_VIEWS.url;
     prepModalForDetail();
 
-    if (field === 'response') {
-      currentModalRecord = r;
-      currentModalExtra = 'Response';
-      buildHeadline(r, 'Response');
-      showEl(modalResponseEl);
-      fillResponseBlock(r);
-      openNetworkModal();
-      return;
-    }
-
-    if (field === 'req-headers') {
-      currentModalRecord = r;
-      currentModalExtra = 'Request Headers';
-      buildHeadline(r, 'Request Headers');
-      currentCopyText = r.reqHeaders || '';
-      showEl(modalHeadersEl);
-      fillReqHeadersBlock(r);
-      openNetworkModal();
-      return;
-    }
-
-    if (field === 'resp-headers') {
-      currentModalRecord = r;
-      currentModalExtra = 'Response Headers';
-      buildHeadline(r, 'Response Headers');
-      currentCopyText = r.respHeaders || '';
-      showEl(modalHeadersEl);
-      fillRespHeadersBlock(r);
-      openNetworkModal();
-      return;
-    }
-
-    if (field === 'headers') {
-      currentModalRecord = r;
-      currentModalExtra = 'Headers';
-      buildHeadline(r, 'Headers');
-
-      const parts = [];
-      if (r.reqHeaders) parts.push('Request Headers:\n' + r.reqHeaders);
-      if (r.respHeaders) parts.push('Response Headers:\n' + r.respHeaders);
-      const content = parts.length ? parts.join('\n\n') : '(no headers)';
-      currentCopyText = content;
-      const sec = makeSection('Headers', content);
-      if (sec) { clearEl(modalHeadersEl); modalHeadersEl.appendChild(sec); }
-      showEl(modalHeadersEl);
-
-      showEl(modalResponseEl);
-      fillResponseBlock(r);
-      openNetworkModal();
-      return;
-    }
-
-    if (field === 'params' || field === 'body') {
-      currentModalRecord = r;
-      currentModalExtra = field === 'params' ? 'Params' : 'Body';
-      currentCopyText = (field === 'params' ? r.params : r.body) || '';
-      buildHeadline(r, field === 'params' ? 'Params' : 'Body');
-      showEl(modalParamsEl);
-      fillParamsBlock(r, field);
-      openNetworkModal();
-      return;
-    }
-
     currentModalRecord = r;
-    currentModalExtra = 'URL';
-    const contentText = r.url || '(empty url)';
-    currentCopyText = contentText;
+    currentModalExtra = view.label;
+    currentModalField = FIELD_VIEWS[field] ? field : 'url';
 
-    buildHeadline(r, 'URL');
-
-    const sec = makeSection('URL', contentText);
-    if (sec) { clearEl(modalResponseEl); modalResponseEl.appendChild(sec); }
-    showEl(modalResponseEl);
-
+    if (view.copy) currentCopyText = view.copy(r);
+    buildHeadline(r, view.label);
+    view.render(r);
     openNetworkModal();
   }
 
   /* ============================ 复制 / 导出 ============================ */
 
 
+
+  function shellQuote(s) {
+    return "'" + String(s).replace(/'/g, "'\\''") + "'";
+  }
 
   function replayRequest(r) {
     try {
@@ -4204,21 +4324,11 @@
       const url = r.url || '';
       if (!url) return;
       const headers = {};
-      if (r.reqHeaders) {
-        const lines = r.reqHeaders.split(/\r?\n/);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line.trim()) continue;
-          const idx = line.indexOf(':');
-          if (idx === -1) continue;
-          const k = line.slice(0, idx).trim();
-          const v = line.slice(idx + 1).trim();
-          if (!k) continue;
-          if (k.toLowerCase() === 'host') continue;
-          if (k.toLowerCase() === 'content-length') continue;
-          headers[k] = v;
-        }
-      }
+      parseHeaders(r.reqHeaders).forEach(function (h) {
+        const k = h.name.toLowerCase();
+        if (!h.name || k === 'host' || k === 'content-length') return;
+        headers[h.name] = h.value;
+      });
       const opts = { method: method, headers: headers };
       const body = r.body || '';
       if (body && method !== 'GET' && method !== 'HEAD') {
@@ -4241,29 +4351,18 @@
     try {
       const url = r.url || '';
       if (!url) return '';
-      let cmd = "curl -X " + (r.method || "GET") + " '" + url.replace(/'/g, "'\''") + "'";
-      const reqHeaders = r.reqHeaders || '';
-      if (reqHeaders) {
-        const lines = reqHeaders.split(/\r?\n/);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line.trim()) continue;
-          const idx = line.indexOf(':');
-          if (idx === -1) continue;
-          const k = line.slice(0, idx).trim();
-          const v = line.slice(idx + 1).trim();
-          if (!k) continue;
-          if (k.toLowerCase() === 'content-length') continue;
-          if (k.toLowerCase() === 'host') continue;
-          cmd += " -H '" + (k + ": " + v).replace(/'/g, "'\''") + "'";
-        }
-      }
+      const method = (r.method || 'GET').toUpperCase();
+      let cmd = 'curl -X ' + method + ' ' + shellQuote(url);
+
+      parseHeaders(r.reqHeaders).forEach(function (h) {
+        const k = h.name.toLowerCase();
+        if (!h.name || k === 'content-length' || k === 'host') return;
+        cmd += ' -H ' + shellQuote(h.name + ': ' + h.value);
+      });
+
       const body = r.body || '';
-      if (body && (r.method === 'POST' || r.method === 'PUT' || r.method === 'PATCH' || r.method === 'DELETE')) {
-        cmd += " --data-raw '" + body.replace(/'/g, "'\''") + "'";
-      }
-      if (r.method === 'GET' && body) {
-        cmd += " --data-raw '" + body.replace(/'/g, "'\''") + "'";
+      if (body && ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].indexOf(method) !== -1) {
+        cmd += ' --data-raw ' + shellQuote(body);
       }
       return cmd;
     } catch (e) {
@@ -4300,30 +4399,9 @@
 
 
   function exportHAR() {
-    const isRes = currentTab === TAB_RESOURCE;
-    if (isRes) {
-      // HAR is primarily for network; still export what we have
-    }
     const entries = getFiltered().filter(function (r) { return r.kind !== 'resource'; }).map(function (r) {
-      const reqHeaders = [];
-      if (r.reqHeaders) {
-        r.reqHeaders.split(/\r?\n/).forEach(function (line) {
-          if (!line.trim()) return;
-          const idx = line.indexOf(':');
-          if (idx === -1) return;
-          reqHeaders.push({ name: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() });
-        });
-      }
-      const respHeaders = [];
-      if (r.respHeaders) {
-        r.respHeaders.split(/\r?\n/).forEach(function (line) {
-          if (!line.trim()) return;
-          const idx = line.indexOf(':');
-          if (idx === -1) return;
-          respHeaders.push({ name: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() });
-        });
-      }
-      let cookies = [];
+      const reqHeaders = parseHeaders(r.reqHeaders);
+      const respHeaders = parseHeaders(r.respHeaders);
       let postData = undefined;
       if (r.body && (r.method === 'POST' || r.method === 'PUT' || r.method === 'PATCH')) {
         postData = { mimeType: (r.mimeType || 'text/plain'), text: r.body };
@@ -4337,7 +4415,7 @@
           method: r.method || 'GET',
           url: r.url || '',
           httpVersion: 'HTTP/1.1',
-          cookies: cookies,
+          cookies: [],
           headers: reqHeaders,
           queryString: [],
           postData: postData,
@@ -4372,15 +4450,7 @@
       }
     };
     const json = JSON.stringify(har, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'network-' + new Date().toISOString().replace(/[:.]/g, '-') + '.har';
-    a.style.display = 'none';
-    (document.body || document.documentElement).appendChild(a);
-    a.click();
-    setTimeout(function () { a.remove(); URL.revokeObjectURL(url); }, 0);
+    downloadFile('network-' + fileTimestamp() + '.har', json);
   }
 
   function exportJSON() {
@@ -4410,23 +4480,10 @@
       };
     });
 
-    const json = JSON.stringify(data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = (isRes ? 'resources-' : 'network-requests-') +
-        new Date().toISOString().replace(/[:.]/g, '-') + '.json';
-    a.style.display = 'none';
-
-    (document.body || document.documentElement).appendChild(a);
-    a.click();
-
-    setTimeout(function () {
-      a.remove();
-      URL.revokeObjectURL(url);
-    }, 0);
+    downloadFile(
+        (isRes ? 'resources-' : 'network-requests-') + fileTimestamp() + '.json',
+        JSON.stringify(data, null, 2)
+    );
   }
 
   /* ============================== 启动 ============================== */
