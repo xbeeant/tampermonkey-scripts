@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微信公众号推文 · Network Debugger 首次介绍</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 16px 72px;
+    background: #f2f3f5;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #24292f;
+  }
+  .toolbar {
+    max-width: 677px; margin: 0 auto 16px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  }
+  .toolbar .label { font-size: 13px; font-weight: 600; color: #57606a; margin-right: 6px; }
+  button {
+    font: inherit; font-size: 12px; cursor: pointer;
+    padding: 7px 13px; border-radius: 6px;
+    border: 1px solid #d0d7de; background: #fff; color: #24292f;
+  }
+  button:hover { background: #f6f8fa; border-color: #07c160; }
+  button.primary { background: #07c160; border-color: #07c160; color: #fff; }
+  button.primary:hover { background: #06ad56; }
+  #status { font-size: 12px; color: #07c160; margin-left: 4px; min-height: 16px; }
+  .notice {
+    max-width: 677px; margin: 0 auto 12px;
+    background: #fffbe6; border: 1px solid #ffe58f; border-radius: 4px;
+    padding: 10px 14px; font-size: 12px; line-height: 1.8; color: #614700;
+  }
+  .notice code { background: #fff5cc; padding: 1px 4px; border-radius: 3px; }
+  .paper {
+    max-width: 677px; margin: 0 auto;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 4px;
+    box-shadow: 0 2px 14px rgba(0,0,0,.05);
+    padding: 40px 34px 48px;
+  }
+  .meta {
+    max-width: 677px; margin: 18px auto 0;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 4px;
+    padding: 18px 22px; font-size: 13px; line-height: 1.9; color: #57606a;
+  }
+  .meta b { color: #24292f; }
+  .meta .row { margin-bottom: 6px; }
+  .meta code { background: #f6f8fa; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  .tip { font-size: 12px; color: #8b949e; margin-top: 10px; }
+  @media (max-width: 720px) {
+    .paper { padding: 26px 18px 32px; }
+    body { padding: 16px 8px 48px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <span class="label">公众号推文预览</span>
+  <button class="primary" onclick="copyRich()">复制正文（富文本）</button>
+  <button onclick="copyMd()">复制 Markdown</button>
+  <button onclick="copySummary()">复制摘要</button>
+  <span id="status"></span>
+</div>
+
+<div class="notice">配图说明：共 5 张本地 PNG（1 张封面 + 4 张内文图），都在 <code>images/</code> 目录。复制富文本到公众号后台时图片不会随粘贴上传，请按图注里的文件名依次上传并插入对应位置；封面图建议同时设为公众号头图。</div>
+
+<div class="paper">
+<div id="article">
+
+<h1 style="font-size:21px;line-height:1.5;font-weight:700;color:#1a1a1a;margin:0 0 8px;letter-spacing:.3px;">不用按 F12，也能看清网页里的每一个请求</h1>
+<p style="font-size:13px;color:#8c8c8c;margin:0 0 28px;line-height:1.7;">一个悬浮在页面右下角的网络调试面板，点开就能用</p>
+
+<figure style="margin:0 0 26px;text-align:center;"><img src="images/cover.png" alt="封面：不用按 F12，也能看清每一个请求" style="display:block;width:100%;height:auto;margin:0 auto;border-radius:4px;"><figcaption style="font-size:12px;color:#8c8c8c;line-height:1.7;margin-top:8px;">封面图｜images/cover.png（可同时设为公众号头图，点击图片可放大）</figcaption></figure>
+
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 18px;">有时候只是想看一眼：这个接口到底返回了什么？</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 18px;">在桌面上，按 F12、切到 Network、从一堆请求里翻出那一条、点开 Preview，动作很熟。但换成<strong style="color:#07c160;">真机上的移动浏览器</strong>、<strong style="color:#07c160;">客户环境里的内嵌 WebView</strong>，或者只是想给不写代码的同事指一下「就是这里报错」，这一串动作就变得特别笨重。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 28px;">所以做了这样一个小工具：任意网页右下角一个 <strong style="color:#07c160;">NET</strong> 图标，点开，就是一整块深色的网络调试面板。不切窗口，不装客户端，跟着页面走。</p>
+
+<hr style="border:none;border-top:1px solid #ececec;margin:0 0 28px;">
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">它是什么，不是什么</h2>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 18px;">它是一个单文件的 Tampermonkey 用户脚本。装好之后，会在页面里接管 <strong style="color:#07c160;">XMLHttpRequest、fetch、EventSource、WebSocket</strong>，再用 <strong style="color:#07c160;">PerformanceObserver</strong> 收一份静态资源的加载计时；iframe 里的记录也会汇总到主页面板。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 18px;">先说清楚边界：它<strong style="color:#07c160;">不是系统级抓包</strong>，不替代 Charles、Fiddler 或 DevTools Network。地址栏导航、没经过页面 JS 的请求，它看不到。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 22px;">但它有几个恰好很好用的地方：<strong style="color:#07c160;">零部署、跟着页面走、移动浏览器里也能用</strong>。而且能顺手看到 DevTools 里不那么直观的东西——一条 SSE 流累计收到了多少事件、某个请求复制成 cURL 长什么样、把整段会话打包成 HAR 直接发给同事。</p>
+
+<figure style="margin:0 0 28px;text-align:center;"><img src="images/01-overview.png" alt="Network Debugger 主界面：请求列表、页签、搜索与快捷过滤" style="display:block;width:100%;height:auto;margin:0 auto;border-radius:4px;"><figcaption style="font-size:12px;color:#8c8c8c;line-height:1.7;margin-top:8px;">图 1｜主界面：五个页签、搜索与快捷过滤、请求列表，右下角 NET 是入口（images/01-overview.png，点击可放大）</figcaption></figure>
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">五个页签，把网络摊开来看</h2>
+<figure style="margin:0 0 22px;text-align:center;"><img src="images/04-features.png" alt="五个页签与常用能力一览" style="display:block;width:100%;height:auto;margin:0 auto;border-radius:4px;"><figcaption style="font-size:12px;color:#8c8c8c;line-height:1.7;margin-top:8px;">图 2｜五个页签与常用能力一览（images/04-features.png，点击可放大）</figcaption></figure>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;"><strong style="color:#07c160;">Network</strong>｜XHR / fetch / SSE 的请求与响应：方法、状态码、耗时、URL、Query 参数、请求头、响应头、响应内容，一屏看全。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;"><strong style="color:#07c160;">Resources</strong>｜页面加载的静态资源，带类型、来源、传输大小和计时信息。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;"><strong style="color:#07c160;">Waterfall</strong>｜接口和资源画在同一张耗时横道图上，可以按开始时间、最新、耗时排序，时间窗也能调。资源条会拆成 Blocked / DNS / TCP / Waiting / Download 五段，慢在哪一段一眼就知道。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;"><strong style="color:#07c160;">WS</strong>｜WebSocket 的连接与消息收发记录。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 22px;"><strong style="color:#07c160;">Storage</strong>｜Cookies、LocalStorage、SessionStorage，直接查看、新增、编辑、删除。</p>
+
+<figure style="margin:0 0 28px;text-align:center;"><img src="images/02-waterfall.png" alt="请求耗时瀑布图：接口与资源的时序横道" style="display:block;width:100%;height:auto;margin:0 auto;border-radius:4px;"><figcaption style="font-size:12px;color:#8c8c8c;line-height:1.7;margin-top:8px;">图 3｜耗时瀑布图：接口与资源同图对比，资源条按五个阶段拆分（images/02-waterfall.png，点击可放大）</figcaption></figure>
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">从一大堆请求里，快速找到那一条</h2>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">搜索框可以搜 URL、方法、参数、Body、请求头、状态码、响应内容、MIME 类型；加个减号就是排除，比如 <code style="background:#f5f5f5;color:#c7254e;padding:2px 5px;border-radius:3px;font-size:13px;">api/user -healthcheck</code>。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">上面还有一排快捷过滤：按请求类型、HTTP 方法、状态码、来源（主页面 / iframe），以及「错误」「慢请求」「有 Body」「有 Params」「大响应」这些标记，点一下就筛出来。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 28px;">表格支持分组折叠，表头可以直接拖列宽、双击复位；面板能全屏、折叠、调宽度，悬浮图标也能拖到顺手的位置，<strong style="color:#07c160;">位置会记住</strong>，右键还能一键复位。</p>
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">点开详情，把内容看明白</h2>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">任何一格内容点一下，都会弹窗看全文并支持复制，长 URL、长 Header 不用再靠鼠标拖选。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">响应是 JSON 时会自动格式化，可以切成<strong style="color:#07c160;">树形展开</strong>逐层看，也能切回 Raw 原文；树里还能搜索并高亮命中的字段。图片响应直接给预览，二进制文件给出类型与大小提示，SSE 会实时累计事件数。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 22px;">瀑布图里的每一条也都能点，直接跳回这条请求的完整详情。</p>
+
+<figure style="margin:0 0 28px;text-align:center;"><img src="images/03-detail.png" alt="请求详情弹窗：请求头、Query 参数与 JSON 树" style="display:block;width:100%;height:auto;margin:0 auto;border-radius:4px;"><figcaption style="font-size:12px;color:#8c8c8c;line-height:1.7;margin-top:8px;">图 4｜详情弹窗：请求头、Query 参数与 JSON 树搜索高亮（images/03-detail.png，点击可放大）</figcaption></figure>
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">把现场带走：复制、重放、导出、导入</h2>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">一条请求可以一键生成 <strong style="color:#07c160;">cURL 命令</strong>，也可以 <strong style="color:#07c160;">Replay</strong> 再发一次（会二次确认，避免手滑重放写操作）。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">整段会话能导出成 <strong style="color:#07c160;">JSON 或 HAR</strong>。HAR 带 pages、queryString、cookies 等完整结构，可以直接丢进别的工具继续分析；导出的 JSON 也能再<strong style="color:#07c160;">导回来</strong>，方便把现场交给同事接着查。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 28px;">隐私上做了默认保护：导出时会遮蔽 Authorization、Cookie、token、密码以及常见的敏感参数，Cookie 只留名称不留值。需要原始内容时可以关掉脱敏开关，<strong style="color:#07c160;">面板内始终显示完整信息，只有导出环节做脱敏</strong>。</p>
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">设置与适配</h2>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">所有可调项集中在一个 <strong style="color:#07c160;">⚙ 设置面板</strong>：暂停捕获、导出脱敏、紧凑行高，慢请求 / 慢资源 / 大资源的阈值，最大记录数，瀑布图时间窗；另外可以一键复位列宽、图标位置和全部默认值。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">记录条数可以自己设上限，到顶自动淘汰最旧的，挂一整天也不用担心越攒越多。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 14px;">窄屏下自动切移动端布局：表格可横向滑，弹窗内容可纵向滚；图标位置、列宽和各项设置都会本地保存，刷新不丢。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 28px;">脚本不申请任何浏览器特权（<code style="background:#f5f5f5;color:#c7254e;padding:2px 5px;border-radius:3px;font-size:13px;">@grant none</code>）。代价是设置按站点各自独立，换域名要重设一遍——设置面板里也写明了这一点。</p>
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">三步装上</h2>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 12px;"><strong style="color:#07c160;">1</strong>　浏览器装 Tampermonkey 或 Violentmonkey（Chrome / Edge / Firefox / Safari 均可）。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 12px;"><strong style="color:#07c160;">2</strong>　打开项目地址，新建用户脚本，把 <code style="background:#f5f5f5;color:#c7254e;padding:2px 5px;border-radius:3px;font-size:13px;">network-debuger.js</code> 全文粘贴保存；或直接走 Greasy Fork 的脚本页安装。</p>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 18px;"><strong style="color:#07c160;">3</strong>　刷新任意网页，右下角出现 NET 图标，就能用了。</p>
+<p style="font-size:14px;line-height:1.9;color:#6b6b6b;background:#f7f8fa;padding:12px 14px;border-radius:4px;margin:0 0 28px;">项目地址：github.com/xbeeant/tampermonkey-scripts<br>Greasy Fork 脚本 ID：601227<br>单文件、零依赖、MIT 协议，元数据里带更新地址，后续可自动更新。</p>
+
+<h2 style="font-size:17px;line-height:1.5;font-weight:700;color:#1a1a1a;border-left:4px solid #07c160;padding-left:10px;margin:0 0 18px;">适合放在哪些场景</h2>
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 28px;">真机 / WebView 上排查接口问题、前后端联调时快速核对请求参数、验证 SSE 与 WebSocket 消息、看资源加载慢在哪一段、把一次复现的完整请求打包给同事。或者，只是单纯不想为了看一眼返回值而切一次窗口。</p>
+
+<hr style="border:none;border-top:1px solid #ececec;margin:0 0 24px;">
+<p style="font-size:15px;line-height:1.85;color:#3f3f3f;margin:0 0 18px;">如果你也常在这些场景里折腾，可以试试它。用得不顺手的地方，欢迎提 issue。</p>
+<p style="font-size:14px;color:#8c8c8c;margin:0;line-height:1.8;">— 完 —</p>
+
+</div>
+</div>
+
+<div class="meta">
+  <div class="row"><b>备用标题</b>：把 Network 面板塞进网页右下角 / 一个脚本，让任意网页自带请求调试面板</div>
+  <div class="row"><b>摘要（可直接贴后台）</b>：<span id="summaryText">一个 Tampermonkey 用户脚本：任意网页右下角点开 NET 图标，就能实时查看 XHR / fetch / SSE 请求、静态资源耗时、WebSocket 消息与 Storage。支持搜索过滤、耗时瀑布图、JSON 树、cURL 复制、HAR / JSON 导出脱敏，桌面和移动端都能用。</span></div>
+  <div class="row"><b>建议标签</b>：前端调试 · 油猴脚本 · 效率工具 · 网络请求</div>
+  <div class="row"><b>配图清单</b>（按顺序）：<code>cover.png</code> 封面 / 头图 · <code>01-overview.png</code> 主界面 · <code>04-features.png</code> 功能地图 · <code>02-waterfall.png</code> 瀑布图 · <code>03-detail.png</code> 详情弹窗</div>
+  <div class="tip">「复制正文（富文本）」会保留标题、加粗、色块与代码样式，直接粘贴进公众号编辑器即可；Markdown 版会带图片路径引用，适合先转到其他排版工具。图片需在公众号后台单独上传，预览区之外的这卡片不会被复制。</div>
+</div>
+
+<script>
+var statusEl = document.getElementById('status');
+function flash(msg) {
+  statusEl.textContent = msg;
+  setTimeout(function () { statusEl.textContent = ''; }, 2200);
+}
+function richHtml() {
+  return document.getElementById('article').innerHTML;
+}
+function legacyCopy(node) {
+  var sel = window.getSelection();
+  var range = document.createRange();
+  range.selectNodeContents(node);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  var okFlag = false;
+  try { okFlag = document.execCommand('copy'); } catch (e) { okFlag = false; }
+  sel.removeAllRanges();
+  return okFlag;
+}
+function copyRich() {
+  var node = document.getElementById('article');
+  var html = richHtml();
+  var text = node.innerText;
+  if (navigator.clipboard && window.ClipboardItem) {
+    try {
+      var item = new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([text], { type: 'text/plain' })
+      });
+      navigator.clipboard.write([item]).then(function () {
+        flash('已复制富文本，去公众号后台粘贴即可');
+      }, function () {
+        flash(legacyCopy(node) ? '已复制富文本' : '复制失败，请手动全选预览区');
+      });
+      return;
+    } catch (e) { /* 走降级 */ }
+  }
+  flash(legacyCopy(node) ? '已复制富文本，去公众号后台粘贴即可' : '复制失败，请手动全选预览区');
+}
+function toMarkdown(root) {
+  var out = [];
+  var blocks = { P: 1, H1: 1, H2: 1, H3: 1, LI: 1, PRE: 1, BLOCKQUOTE: 1,
+                 DIV: 1, SECTION: 1, HR: 1, FIGURE: 1, FIGCAPTION: 1 };
+  function walk(n) {
+    if (n.nodeType === 3) { out.push(n.nodeValue); return; }
+    if (n.nodeType !== 1) return;
+    var tag = n.tagName.toUpperCase();
+    if (tag === 'BR') { out.push('\n'); return; }
+    if (tag === 'HR') { out.push('\n\n---\n\n'); return; }
+    if (tag === 'IMG') {
+      out.push('\n\n![' + (n.getAttribute('alt') || '配图') + '](' + (n.getAttribute('src') || '') + ')\n\n');
+      return;
+    }
+    var inPre = n.parentNode && n.parentNode.tagName === 'PRE';
+    if (tag === 'STRONG' || tag === 'B') out.push('**');
+    if (tag === 'CODE' && !inPre) out.push('`');
+    if (tag === 'PRE') out.push('\n```\n');
+    if (tag === 'LI') out.push('- ');
+    if (tag === 'H1') out.push('# ');
+    if (tag === 'H2') out.push('## ');
+    if (tag === 'H3') out.push('### ');
+    for (var i = 0; i < n.childNodes.length; i++) walk(n.childNodes[i]);
+    if (tag === 'STRONG' || tag === 'B') out.push('**');
+    if (tag === 'CODE' && !inPre) out.push('`');
+    if (tag === 'PRE') out.push('\n```\n');
+    if (blocks[tag]) out.push('\n\n');
+  }
+  for (var j = 0; j < root.childNodes.length; j++) walk(root.childNodes[j]);
+  return out.join('').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+function writeText(text, okMsg) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { flash(okMsg); }, function () {
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      flash(document.execCommand('copy') ? okMsg : '复制失败，请手动选择');
+      document.body.removeChild(ta);
+    });
+  } else {
+    var ta2 = document.createElement('textarea');
+    ta2.value = text; document.body.appendChild(ta2); ta2.select();
+    flash(document.execCommand('copy') ? okMsg : '复制失败，请手动选择');
+    document.body.removeChild(ta2);
+  }
+}
+function copyMd() { writeText(toMarkdown(document.getElementById('article')), '已复制 Markdown 全文'); }
+function copySummary() { writeText(document.getElementById('summaryText').textContent.trim(), '已复制摘要'); }
+</script>
+
+</body>
+</html>
