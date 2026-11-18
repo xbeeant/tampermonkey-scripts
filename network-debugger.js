@@ -1,21 +1,17 @@
 // ==UserScript==
 // @name         Network Debugger
 // @namespace    http://tampermonkey.net/
-// @version      1.2.1
+// @version      1.2.2
 // @description  Intercept XMLHttpRequest & fetch on any page, inspect requests/responses/headers in a draggable dark-theme panel with waterfall timing, resizable columns, search, grouping, JSON tree, HAR/JSON export, and a centralized settings panel.
 // @description:zh-CN  拦截任意网页中的 XMLHttpRequest 与 fetch 请求，在可拖拽的深色悬浮面板中实时查看请求方法、状态码、URL、Query 参数、Body、请求/响应头与响应内容；支持请求耗时瀑布图、列宽拖拽、搜索过滤与分组、JSON Tree、cURL 复制、HAR/JSON 导出脱敏、导入会话及集中设置面板。
 // @author       -
 // @match        *://*/*
 // @run-at       document-start
-// @grant        none
-// @noframes
+// @grant        GM_cookie
+// @grant        unsafeWindow
 // @license      MIT
 // @homepageURL  https://github.com/xbeeant/tampermonkey-scripts
 // @supportURL   https://github.com/xbeeant/tampermonkey-scripts/issues
-// @compatible   chrome
-// @compatible   firefox
-// @compatible   edge
-// @compatible   safari
 // @downloadURL https://update.greasyfork.org/scripts/601227/Network%20Debugger.user.js
 // @updateURL https://update.greasyfork.org/scripts/601227/Network%20Debugger.meta.js
 
@@ -25,6 +21,9 @@
 
 (function () {
   'use strict';
+
+  /* 有 @grant 时运行在隔离世界：window 是沙箱对象，页面 API 必须走 unsafeWindow */
+  const win = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
 
   /* ============================== 配置 ============================== */
   const DEFAULT_MAX_RECORDS = 1000;
@@ -59,7 +58,7 @@
   const MIN_COL_WIDTH = 44;          // 列宽拖拽下限（px）
   const WF_BAR_MIN_PCT = 0.5;        // 瀑布图最短条占比，保证 0ms 请求可见
 
-  const SCRIPT_VERSION = '1.2.1';
+  const SCRIPT_VERSION = '1.3.0';
   const MAX_TEXT_RESPONSE = 512 * 1024;      // 单条文本响应最多保留的字符数
   const MAX_IMAGE_PREVIEW = 256 * 1024;      // 图片预览阈值（超过则只记元信息）
   const MAX_BINARY_READ = 2 * 1024 * 1024;   // 二进制响应最多读取的字节数
@@ -73,6 +72,24 @@
   const TAB_STORAGE = 'storage';
   const TAB_WS = 'websocket';
   const TAB_WATERFALL = 'waterfall';
+  const TAB_CONSOLE = 'console';
+
+  const MAX_CONSOLE_RECORDS = 2000;
+  const MAX_CONSOLE_TEXT = 20000;
+  const MAX_CONSOLE_ARG_TEXT = 4000;
+  const MAX_CONSOLE_DEPTH = 4;
+  const MAX_CONSOLE_KEYS = 50;
+
+  const CONSOLE_LEVEL_GROUPS = [
+    { label: 'Level', key: 'level', items: [
+      { value: 'log',   label: 'log',   cls: 'clevel-log' },
+      { value: 'info',  label: 'info',  cls: 'clevel-info' },
+      { value: 'warn',  label: 'warn',  cls: 'clevel-warn' },
+      { value: 'error', label: 'error', cls: 'clevel-error' },
+      { value: 'debug', label: 'debug', cls: 'clevel-debug' },
+      { value: 'other', label: '其他',  cls: 'clevel-other' }
+    ], cls: '' }
+  ];
 
   /* 表格列宽默认值（百分比），与 buildUI 中 colgroup 保持一致 */
   const COL_WIDTH_KEYS = ['network', 'resource', 'websocket'];
@@ -118,7 +135,7 @@
   }
 
   const IS_TOP = (function () {
-    try { return window.top === window.self; }
+    try { return win.top === win.self; }
     catch (e) { return false; }
   })();
 
@@ -130,7 +147,7 @@
 
   let slowThreshold = (function () {
     try {
-      const v = parseInt(localStorage.getItem(LS_KEY_SLOW), 10);
+      const v = parseInt(win.localStorage.getItem(LS_KEY_SLOW), 10);
       if (!isNaN(v) && v >= 0) return v;
     } catch (e) { /* ignore */ }
     return DEFAULT_SLOW_THRESHOLD;
@@ -138,7 +155,7 @@
 
   let largeResThreshold = (function () {
     try {
-      const v = parseInt(localStorage.getItem(LS_KEY_LARGE_RES), 10);
+      const v = parseInt(win.localStorage.getItem(LS_KEY_LARGE_RES), 10);
       if (!isNaN(v) && v >= 0) return v;
     } catch (e) { /* ignore */ }
     return DEFAULT_LARGE_RES_THRESHOLD;
@@ -146,7 +163,7 @@
 
   let resSlowThreshold = (function () {
     try {
-      const v = parseInt(localStorage.getItem(LS_KEY_RES_SLOW), 10);
+      const v = parseInt(win.localStorage.getItem(LS_KEY_RES_SLOW), 10);
       if (!isNaN(v) && v >= 0) return v;
     } catch (e) { /* ignore */ }
     return DEFAULT_RES_SLOW_THRESHOLD;
@@ -156,7 +173,7 @@
 
   let groupBy = (function () {
     try {
-      const v = localStorage.getItem(LS_KEY_GROUP) || '';
+      const v = win.localStorage.getItem(LS_KEY_GROUP) || '';
       if (VALID_GROUP_MODES.indexOf(v) !== -1) return v;
     } catch (e) { /* ignore */ }
     return '';
@@ -168,7 +185,7 @@
   /* 悬浮图标位置：null 表示使用默认右下角；拖拽后为 { left, top } 并持久化 */
   let fabPos = (function () {
     try {
-      const raw = localStorage.getItem(LS_KEY_FAB_POS);
+      const raw = win.localStorage.getItem(LS_KEY_FAB_POS);
       if (!raw) return null;
       const p = JSON.parse(raw);
       if (p && typeof p.left === 'number' && typeof p.top === 'number' &&
@@ -181,7 +198,7 @@
 
   function readBoolSetting(key, fallback) {
     try {
-      const v = localStorage.getItem(key);
+      const v = win.localStorage.getItem(key);
       if (v === '1') return true;
       if (v === '0') return false;
     } catch (e) { /* ignore */ }
@@ -190,17 +207,17 @@
 
   function readIntSetting(key, fallback, min, max) {
     try {
-      const v = parseInt(localStorage.getItem(key), 10);
+      const v = parseInt(win.localStorage.getItem(key), 10);
       if (!isNaN(v) && v >= min && v <= max) return v;
     } catch (e) { /* ignore */ }
     return fallback;
   }
 
   function writeSetting(key, value) {
-    try { localStorage.setItem(key, String(value)); } catch (e) { /* ignore */ }
+    try { win.localStorage.setItem(key, String(value)); } catch (e) { /* ignore */ }
   }
 
-  /* 暂停记录 / 导出脱敏 / 紧凑行高：@grant none 下设置按 origin 隔离 */
+  /* 暂停记录 / 导出脱敏 / 紧凑行高：设置写入页面 origin 的 localStorage */
   let capturePaused = readBoolSetting(LS_KEY_PAUSED, false);
   let maskOnExport = readBoolSetting(LS_KEY_MASK_EXPORT, true);
   let denseRows = readBoolSetting(LS_KEY_DENSE, false);
@@ -215,8 +232,10 @@
     resource: { search: '', groupBy: '', collapsed: Object.create(null) },
     storage: { search: '' },
     websocket: { search: '' },
-    waterfall: { search: '' }
+    waterfall: { search: '' },
+    console: { search: '' }
   };
+  const consoleFilter = { level: new Set() };
   const resFilterState = {
     type: new Set(),
     cache: new Set(),
@@ -229,6 +248,17 @@
   let currentModalExtra = null;
   let responseViewMode = 'raw'; // raw | tree
   let responseSearchTerm = '';
+
+  /* Console 支持 */
+  let consoleRecords = [];
+  let consoleSeq = 0;
+  let consoleTableWrapEl = null;
+  let consoleToolsWrapEl = null;
+  let consoleChipsWrapEl = null;
+  let consoleTabBtnEl = null;
+  let consoleAutoScrollEl = null;
+  let consoleAutoScroll = true;
+  let consoleCapturing = false; /* 防止序列化时递归触发 console */
 
   /* WebSocket 支持 */
   let wsRecords = [];
@@ -295,6 +325,16 @@
   let storeSubTab = 'local';
   const STORE_SUB_LABELS = { cookie: 'Cookies', local: 'LocalStorage', session: 'SessionStorage' };
 
+  /* 响应头 Set-Cookie 还原快照：页面 JS 读不到 HttpOnly Cookie，只能从拦截到的响应头还原 */
+  const MAX_SET_COOKIE_ENTRIES = 300;
+  const setCookieStore = Object.create(null);
+
+  /* GM_cookie 快照（唯一能读到 HttpOnly 的入口），异步拉取后触发 Storage 重绘 */
+  const GM_COOKIE_TTL = 1500;
+  let gmCookies = null;
+  let gmCookiesAt = 0;
+  let gmCookiesBusy = false;
+
   /* Storage 新增条目模态框内部节点 */
   let storeAddOverlayEl = null; /* = storeAddModal.overlay */
   let storeAddTitleEl = null;
@@ -308,6 +348,7 @@
   let storeViewKeyEl = null;
   let storeViewValueEl = null;
   let storeViewSaveEl = null;
+  let storeViewDeleteBtnEl = null;
   let storeViewHlEl = null;
   let storeViewPreColEl = null;
   let storeViewTabsEl = null;
@@ -596,6 +637,126 @@
     return out.join('\n');
   }
 
+  /* ---------- GM_cookie：异步读取（含 HttpOnly） ---------- */
+
+  function gmListCookies() {
+    return new Promise(function (resolve) {
+      let settled = false;
+      function done(value) {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      }
+      try {
+        let api = null;
+        if (typeof GM_cookie !== 'undefined' && GM_cookie) api = GM_cookie;
+        else if (typeof GM !== 'undefined' && GM && GM.cookie) api = GM.cookie;
+        if (!api || typeof api.list !== 'function') { done(null); return; }
+        const ret = api.list({}, function (cookies, error) {
+          done(error ? null : (Array.isArray(cookies) ? cookies : null));
+        });
+        if (ret && typeof ret.then === 'function') {
+          ret.then(function (cookies) { done(Array.isArray(cookies) ? cookies : null); })
+            .catch(function () { done(null); });
+        }
+      } catch (e) { done(null); }
+    });
+  }
+
+  function requestGmCookies(force) {
+    if (gmCookiesBusy) return;
+    if (!force && gmCookies && Date.now() - gmCookiesAt < GM_COOKIE_TTL) return;
+    gmCookiesBusy = true;
+    gmListCookies().then(function (list) {
+      gmCookiesBusy = false;
+      gmCookies = list;
+      gmCookiesAt = Date.now();
+      if (storeSubTab === 'cookie' && currentTab === TAB_STORAGE) renderStorage();
+    });
+  }
+
+  /* ---------- Set-Cookie 还原（含 HttpOnly） ---------- */
+
+  function parseSetCookieLine(line, fallbackDomain, fromUrl) {
+    if (!line) return null;
+    const segments = String(line).split(';');
+    const kv = segments.shift();
+    const eq = kv.indexOf('=');
+    if (eq < 1) return null;
+    const name = kv.slice(0, eq).trim();
+    if (!name) return null;
+
+    const out = {
+      name: name,
+      value: kv.slice(eq + 1).trim(),
+      domain: fallbackDomain || '',
+      path: '/',
+      httpOnly: false,
+      secure: false,
+      sameSite: '',
+      expires: 0,
+      deleted: false,
+      from: fromUrl || '',
+      time: Date.now()
+    };
+    let hasMaxAge = false;
+    let maxAge = 0;
+
+    segments.forEach(function (seg) {
+      const i = seg.indexOf('=');
+      const key = (i < 0 ? seg : seg.slice(0, i)).trim().toLowerCase();
+      const val = i < 0 ? '' : seg.slice(i + 1).trim();
+      if (key === 'httponly') out.httpOnly = true;
+      else if (key === 'secure') out.secure = true;
+      else if (key === 'domain') { if (val) out.domain = val.replace(/^\./, '').toLowerCase(); }
+      else if (key === 'path') { if (val) out.path = val; }
+      else if (key === 'samesite') out.sameSite = val;
+      else if (key === 'expires') {
+        const t = Date.parse(val);
+        if (!isNaN(t)) out.expires = t;
+      } else if (key === 'max-age') {
+        hasMaxAge = true;
+        maxAge = parseInt(val, 10);
+        if (isNaN(maxAge)) maxAge = 0;
+      }
+    });
+
+    if (hasMaxAge) out.expires = maxAge <= 0 ? 1 : Date.now() + maxAge * 1000;
+    /* Max-Age<=0 或过期时间是过去，表示浏览器应删除该 Cookie */
+    if (hasMaxAge && maxAge <= 0) out.deleted = true;
+    else if (!hasMaxAge && out.expires && out.expires <= Date.now()) out.deleted = true;
+    return out;
+  }
+
+  function captureSetCookies(rec) {
+    if (!rec || rec.imported) return;
+    const raw = rec.respHeaders;
+    if (!raw || typeof raw !== 'string') return;
+    let host = '';
+    try { host = new URL(rec.url).hostname; } catch (e) { /* ignore */ }
+
+    const lines = raw.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const idx = line.indexOf(':');
+      if (idx < 0) continue;
+      if (line.slice(0, idx).trim().toLowerCase() !== 'set-cookie') continue;
+      const c = parseSetCookieLine(line.slice(idx + 1).trim(), host, rec.url);
+      if (!c) continue;
+      const key = c.name + '|' + c.domain + '|' + c.path;
+      if (c.deleted) { delete setCookieStore[key]; continue; }
+      setCookieStore[key] = c;
+    }
+
+    const keys = Object.keys(setCookieStore);
+    if (keys.length > MAX_SET_COOKIE_ENTRIES) {
+      const extras = keys.sort(function (a, b) {
+        return setCookieStore[a].time - setCookieStore[b].time;
+      }).slice(0, keys.length - MAX_SET_COOKIE_ENTRIES);
+      extras.forEach(function (k) { delete setCookieStore[k]; });
+    }
+  }
+
   function statusBucket(status) {
     if (status >= 200 && status < 300) return '2xx';
     if (status >= 300 && status < 400) return '3xx';
@@ -812,6 +973,7 @@
   const MSG_TAG_UPDATE = '__NRP_UPDATE__';
   const MSG_TAG_WS = '__NRP_WS__';
   const MSG_TAG_WS_UPDATE = '__NRP_WS_UPDATE__';
+  const MSG_TAG_CONSOLE = '__NRP_CONSOLE__';
 
   function nextStreamId() {
     return 's' + (++streamSeq) + '-' + Date.now().toString(36) + '-' +
@@ -834,6 +996,7 @@
     if (!rec.frameUrl && !IS_TOP) {
       try { rec.frameUrl = location.href; } catch (e) { rec.frameUrl = ''; }
     }
+    try { captureSetCookies(rec); } catch (e) { /* ignore */ }
     if (rec.streamId) streamMap[rec.streamId] = rec;
     records.push(rec);
 
@@ -864,7 +1027,7 @@
       return;
     }
     try {
-      window.top.postMessage({ tag: MSG_TAG_UPDATE, streamId: streamId, patch: patch }, location.origin);
+      win.top.postMessage({ tag: MSG_TAG_UPDATE, streamId: streamId, patch: patch }, location.origin);
     } catch (e) { /* ignore */ }
   }
 
@@ -874,7 +1037,7 @@
     } else {
       try {
         rec.frameUrl = location.href;
-        window.top.postMessage({ tag: MSG_TAG, record: rec }, location.origin);
+        win.top.postMessage({ tag: MSG_TAG, record: rec }, location.origin);
       } catch (e) {
         pushRecord(rec);
       }
@@ -883,7 +1046,7 @@
 
   function installMessageListener() {
     if (!IS_TOP) return;
-    window.addEventListener('message', function (ev) {
+    win.addEventListener('message', function (ev) {
       try {
         /* 只接受同源帧上报，避免跨源页面伪造记录污染调试数据 */
         if (ev.origin !== location.origin) return;
@@ -897,9 +1060,190 @@
           addWsRecord(data.record);
         } else if (data.tag === MSG_TAG_WS_UPDATE && data.wsId) {
           updateWsRecord(data.wsId, data.patch);
+        } else if (data.tag === MSG_TAG_CONSOLE && data.record) {
+          pushConsoleRecord(data.record);
         }
       } catch (e) { /* ignore */ }
     }, false);
+  }
+
+  /* ========================== Console 捕获 ========================== */
+
+  function truncConsoleText(s, limit) {
+    const str = String(s == null ? '' : s);
+    const max = limit || MAX_CONSOLE_TEXT;
+    return str.length <= max ? str : str.slice(0, max) + '\n…[已截断，共 ' + str.length + ' 字符]';
+  }
+
+  function consoleArgToString(v, depth, seen) {
+    depth = depth || 0;
+    if (v === null) return 'null';
+    if (v === undefined) return 'undefined';
+    const t = typeof v;
+    if (t === 'string') return v;
+    if (t === 'number' || t === 'boolean' || t === 'bigint' || t === 'symbol') return String(v);
+    if (t === 'function') return '[Function ' + (v.name || 'anonymous') + ']';
+    try { if (v instanceof Error) return v.stack || (v.name + ': ' + v.message); } catch (e) { /* ignore */ }
+    try {
+      if (v && v.nodeType) {
+        if (v.nodeType === 1) return '<' + String(v.tagName).toLowerCase() + (v.id ? '#' + v.id : '') + '>';
+        if (v.nodeType === 9) return '#document';
+        return '[Node ' + v.nodeType + ']';
+      }
+    } catch (e) { /* ignore */ }
+
+    seen = seen || [];
+    if (seen.indexOf(v) !== -1) return '[Circular]';
+    if (depth >= MAX_CONSOLE_DEPTH) return Array.isArray(v) ? '[Array]' : '[Object]';
+    const next = seen.concat([v]);
+    try {
+      if (Array.isArray(v)) {
+        const parts = [];
+        const n = Math.min(v.length, MAX_CONSOLE_KEYS);
+        for (let i = 0; i < n; i++) parts.push(consoleArgToString(v[i], depth + 1, next));
+        if (v.length > n) parts.push('… 另有 ' + (v.length - n) + ' 项');
+        return '[' + parts.join(', ') + ']';
+      }
+      const keys = Object.keys(v);
+      const parts2 = [];
+      const n2 = Math.min(keys.length, MAX_CONSOLE_KEYS);
+      for (let i = 0; i < n2; i++) {
+        let val;
+        try { val = v[keys[i]]; } catch (e) { val = '[?]'; }
+        parts2.push(keys[i] + ': ' + consoleArgToString(val, depth + 1, next));
+      }
+      if (keys.length > n2) parts2.push('… 另有 ' + (keys.length - n2) + ' 项');
+      return '{' + parts2.join(', ') + '}';
+    } catch (e) {
+      try { return String(v); } catch (e2) { return '[unserializable]'; }
+    }
+  }
+
+  function consoleFormatArgs(args) {
+    const arr = Array.prototype.slice.call(args);
+    if (!arr.length) return { text: '', args: [] };
+    const allArgs = arr.map(function (v) { return truncConsoleText(consoleArgToString(v, 0, []), MAX_CONSOLE_ARG_TEXT); });
+    let out = '';
+    const first = arr[0];
+    if (typeof first === 'string' && /%[sdifjoOc%]/.test(first)) {
+      let consumed = 1;
+      out = first.replace(/%[sdifjoOc%]/g, function (m) {
+        if (m === '%%') return '%';
+        if (consumed >= arr.length) return m;
+        const v = arr[consumed++];
+        if (m === '%c') return '';
+        if (m === '%s') return typeof v === 'string' ? v : consoleArgToString(v, 0, []);
+        if (m === '%d' || m === '%i') return String(parseInt(v, 10) || 0);
+        if (m === '%f') return String(parseFloat(v) || 0);
+        return consoleArgToString(v, 0, []);
+      });
+      for (; consumed < arr.length; consumed++) {
+        out += ' ' + consoleArgToString(arr[consumed], 0, []);
+      }
+    } else {
+      out = allArgs.join(' ');
+    }
+    return { text: out, args: allArgs };
+  }
+
+  function consoleCallerSource() {
+    try {
+      const lines = (new Error().stack || '').split('\n');
+      for (let i = 1; i < lines.length; i++) {
+        const l = lines[i].trim();
+        if (!l || l.indexOf('network-debuger') !== -1 || l.indexOf('nrpConsole') !== -1) continue;
+        return l.length > 240 ? l.slice(0, 240) : l;
+      }
+    } catch (e) { /* ignore */ }
+    return '';
+  }
+
+  function consoleLevelGroup(level) {
+    if (level === 'log') return 'log';
+    if (level === 'info') return 'info';
+    if (level === 'warn') return 'warn';
+    if (level === 'error' || level === 'assert' || level === 'uncaught') return 'error';
+    if (level === 'debug' || level === 'trace') return 'debug';
+    return 'other';
+  }
+
+  function pushConsoleRecord(rec) {
+    if (!rec) return;
+    if (capturePaused) return;
+    if (!rec.id) rec.id = ++consoleSeq;
+    if (!rec.time) rec.time = Date.now();
+    if (!rec.frameUrl && !IS_TOP) {
+      try { rec.frameUrl = location.href; } catch (e) { rec.frameUrl = ''; }
+    }
+    consoleRecords.push(rec);
+    if (consoleRecords.length > MAX_CONSOLE_RECORDS) {
+      consoleRecords.splice(0, consoleRecords.length - MAX_CONSOLE_RECORDS);
+    }
+    scheduleRender();
+  }
+
+  function captureConsole(level, args, extra) {
+    if (capturePaused || consoleCapturing) return;
+    consoleCapturing = true;
+    try {
+      const f = consoleFormatArgs(args);
+      const rec = {
+        level: level,
+        text: truncConsoleText(f.text, MAX_CONSOLE_TEXT),
+        args: f.args,
+        time: Date.now(),
+        frameUrl: IS_TOP ? '' : location.href,
+        source: extra && extra.source ? extra.source : ''
+      };
+      if (IS_TOP) pushConsoleRecord(rec);
+      else {
+        try { win.top.postMessage({ tag: MSG_TAG_CONSOLE, record: rec }, location.origin); } catch (e) { /* ignore */ }
+      }
+    } catch (e) { /* ignore */ }
+    finally { consoleCapturing = false; }
+  }
+
+  function installConsoleInterceptor() {
+    const target = win.console;
+    if (!target) return;
+    const levels = ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'table', 'assert', 'clear'];
+    levels.forEach(function (level) {
+      const orig = target[level];
+      if (typeof orig !== 'function') return;
+      try {
+        const patched = function () {
+          const args = arguments;
+          if (level === 'assert') {
+            if (args.length && !args[0]) {
+              captureConsole('error', Array.prototype.slice.call(args, 1), { source: consoleCallerSource() });
+            }
+          } else {
+            captureConsole(level === 'clear' ? 'clear' : level, args,
+              (level === 'error' || level === 'warn') ? { source: consoleCallerSource() } : null);
+          }
+          return orig.apply(this, args);
+        };
+        patched.__nrpOriginal = orig;
+        target[level] = patched;
+      } catch (e) { /* ignore */ }
+    });
+
+    try {
+      win.addEventListener('error', function (e) {
+        if (capturePaused || consoleCapturing) return;
+        if (e && e.target && e.target !== win && e.target !== document) return;
+        const msg = e && e.message ? e.message : 'Uncaught error';
+        const stack = e && e.error && e.error.stack ? '\n' + e.error.stack : '';
+        const src = e && e.filename ? (e.filename + ':' + e.lineno + ':' + e.colno) : '';
+        captureConsole('uncaught', [msg + stack], { source: src });
+      }, true);
+      win.addEventListener('unhandledrejection', function (e) {
+        if (capturePaused || consoleCapturing) return;
+        let reason = e && e.reason;
+        if (reason && reason.stack) reason = reason.stack;
+        captureConsole('uncaught', ['Unhandled promise rejection:', reason], { source: consoleCallerSource() });
+      }, true);
+    } catch (e) { /* ignore */ }
   }
 
   /* ========================== SSE 流式读取 ========================== */
@@ -1161,7 +1505,7 @@
   function addWsRecord(rec) {
     if (capturePaused) return;
     if (!IS_TOP) {
-      try { window.top.postMessage({ tag: MSG_TAG_WS, record: rec }, location.origin); }
+      try { win.top.postMessage({ tag: MSG_TAG_WS, record: rec }, location.origin); }
       catch (e) { /* ignore */ }
       return;
     }
@@ -1183,7 +1527,7 @@
 
   function updateWsRecord(wsId, patch) {
     if (!IS_TOP) {
-      try { window.top.postMessage({ tag: MSG_TAG_WS_UPDATE, wsId: wsId, patch: patch }, location.origin); }
+      try { win.top.postMessage({ tag: MSG_TAG_WS_UPDATE, wsId: wsId, patch: patch }, location.origin); }
       catch (e) { /* ignore */ }
       return;
     }
@@ -1278,14 +1622,14 @@
     PatchedWS.CLOSING = OrigWS.CLOSING;
     PatchedWS.CLOSED = OrigWS.CLOSED;
     PatchedWS.__nrpWsPatched = true;
-    try { window.WebSocket = PatchedWS; } catch (e) {}
+    try { win.WebSocket = PatchedWS; } catch (e) {}
   }
 
   /* ========================== 请求拦截 ========================== */
 
   function installInterceptors() {
     /* ---------------- XMLHttpRequest ---------------- */
-    const XHRProto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+    const XHRProto = win.XMLHttpRequest && win.XMLHttpRequest.prototype;
     if (XHRProto && !XHRProto.__nrpPatched) {
       XHRProto.__nrpPatched = true;
 
@@ -1446,7 +1790,7 @@
     }
 
     /* ---------------- fetch ---------------- */
-    const nativeFetch = window.fetch;
+    const nativeFetch = win.fetch;
     if (typeof nativeFetch === 'function' && !nativeFetch.__nrpPatched) {
       const patched = function (input, init) {
         let method = 'GET';
@@ -1607,11 +1951,11 @@
       };
 
       patched.__nrpPatched = true;
-      window.fetch = patched;
+      win.fetch = patched;
     }
 
     /* ---------------- EventSource ---------------- */
-    const OrigES = window.EventSource;
+    const OrigES = win.EventSource;
     if (typeof OrigES === 'function' && !OrigES.__nrpPatched) {
       const PatchedES = function (url, config) {
         const es = new OrigES(url, config);
@@ -1623,7 +1967,7 @@
       PatchedES.OPEN = OrigES.OPEN != null ? OrigES.OPEN : 1;
       PatchedES.CLOSED = OrigES.CLOSED != null ? OrigES.CLOSED : 2;
       PatchedES.__nrpPatched = true;
-      try { window.EventSource = PatchedES; } catch (e) {}
+      try { win.EventSource = PatchedES; } catch (e) {}
     }
   }
 
@@ -1980,6 +2324,14 @@
   color: #e6edf3; line-height: 1.45;
 }
 #nrp-root .nrp-store-value-text:hover { color: #79c0ff; }
+#nrp-root .nrp-cookie-badge {
+  display: inline-block; margin-left: 6px; padding: 0 5px;
+  font-size: 10px; line-height: 16px; border-radius: 3px;
+  color: #e3b341; background: #272005; border: 1px solid #6e5313;
+  vertical-align: middle; font-weight: 600;
+}
+#nrp-root .nrp-cookie-ro { color: #8b949e; font-size: 11px; }
+#nrp-root .nrp-btn:disabled { opacity: .45; cursor: not-allowed; }
 #nrp-root .nrp-store-actions { text-align: right; white-space: nowrap; }
 #nrp-root .nrp-store-input {
   width: 100%; box-sizing: border-box;
@@ -2126,6 +2478,58 @@
 #nrp-root .nrp-chip-flag.nrp-chip-active {
   background: rgba(210,168,255,.2); color: #d2a8ff; border-color: rgba(210,168,255,.6);
 }
+#nrp-root .nrp-chip-clevel-log.nrp-chip-active {
+  background: rgba(139,148,158,.2); color: #c9d1d9; border-color: rgba(139,148,158,.6);
+}
+#nrp-root .nrp-chip-clevel-info.nrp-chip-active {
+  background: rgba(56,139,253,.2); color: #79c0ff; border-color: rgba(56,139,253,.6);
+}
+#nrp-root .nrp-chip-clevel-warn.nrp-chip-active {
+  background: rgba(210,153,34,.2); color: #d29922; border-color: rgba(210,153,34,.6);
+}
+#nrp-root .nrp-chip-clevel-error.nrp-chip-active {
+  background: rgba(248,81,73,.2); color: #f85149; border-color: rgba(248,81,73,.6);
+}
+#nrp-root .nrp-chip-clevel-debug.nrp-chip-active {
+  background: rgba(210,168,255,.2); color: #d2a8ff; border-color: rgba(210,168,255,.6);
+}
+#nrp-root .nrp-chip-clevel-other.nrp-chip-active {
+  background: rgba(86,211,100,.2); color: #56d364; border-color: rgba(86,211,100,.6);
+}
+
+#nrp-root .nrp-console-tools {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border-bottom: 1px solid #21262d;
+  background: #0d1117; flex-shrink: 0;
+}
+#nrp-root .nrp-console-tools-spacer { flex: 1 1 auto; }
+#nrp-root .nrp-console-toggle {
+  appearance: none; -webkit-appearance: none;
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid #30363d; background: #161b22; color: #8b949e;
+  font-family: inherit; font-size: 11px; line-height: 1.2;
+  padding: 2px 8px; border-radius: 10px; cursor: pointer; white-space: nowrap;
+}
+#nrp-root .nrp-console-toggle.nrp-console-toggle-on {
+  background: rgba(63,185,80,.15); color: #3fb950; border-color: rgba(63,185,80,.5);
+}
+#nrp-root .nrp-console-lv {
+  display: inline-block; min-width: 44px; text-align: center;
+  padding: 1px 6px; border-radius: 9px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+}
+#nrp-root .nrp-console-lv-log   { background: rgba(139,148,158,.15); color: #c9d1d9; }
+#nrp-root .nrp-console-lv-info  { background: rgba(56,139,253,.15); color: #79c0ff; }
+#nrp-root .nrp-console-lv-warn  { background: rgba(210,153,34,.15); color: #d29922; }
+#nrp-root .nrp-console-lv-error { background: rgba(248,81,73,.15); color: #f85149; }
+#nrp-root .nrp-console-lv-debug { background: rgba(210,168,255,.15); color: #d2a8ff; }
+#nrp-root .nrp-console-lv-other { background: rgba(86,211,100,.15); color: #56d364; }
+#nrp-root .nrp-console-msg {
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 60px; overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+#nrp-root .nrp-console-source { color: #8b949e; font-size: 11px; }
 #nrp-root .nrp-chips-reset {
   margin-left: auto; color: #6e7681; font-size: 11px;
   background: transparent; border: 1px solid transparent;
@@ -2842,7 +3246,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       const v = parseInt(slowInputEl.value, 10);
       if (isNaN(v) || v < 0) return;
       slowThreshold = v;
-      try { localStorage.setItem(LS_KEY_SLOW, String(v)); } catch (e) {}
+      try { win.localStorage.setItem(LS_KEY_SLOW, String(v)); } catch (e) {}
       scheduleRender();
     });
     slowInputEl.addEventListener('blur', function () {
@@ -2868,7 +3272,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       const v = parseFloat(input.value);
       if (isNaN(v) || v < 0) return;
       largeResThreshold = Math.round(v * 1024);
-      try { localStorage.setItem(LS_KEY_LARGE_RES, String(largeResThreshold)); } catch (e) {}
+      try { win.localStorage.setItem(LS_KEY_LARGE_RES, String(largeResThreshold)); } catch (e) {}
       scheduleRender();
     }
     input.addEventListener('input', commit);
@@ -2895,7 +3299,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       const v = parseInt(input.value, 10);
       if (isNaN(v) || v < 0) return;
       resSlowThreshold = v;
-      try { localStorage.setItem(LS_KEY_RES_SLOW, String(v)); } catch (e) {}
+      try { win.localStorage.setItem(LS_KEY_RES_SLOW, String(v)); } catch (e) {}
       scheduleRender();
     });
     input.addEventListener('blur', function () {
@@ -3011,7 +3415,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     const st = tabState[currentTab];
       st.groupBy = groupBy;
       if (currentTab === TAB_NETWORK) {
-        try { localStorage.setItem(LS_KEY_GROUP, groupBy); } catch (e) {}
+        try { win.localStorage.setItem(LS_KEY_GROUP, groupBy); } catch (e) {}
       }
       collapsedGroups = {};
       st.collapsed = collapsedGroups;
@@ -3056,15 +3460,20 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       const c = wfTabBtnEl.querySelector('.nrp-tab-count');
       if (c) c.textContent = String(records.length);
     }
+    if (consoleTabBtnEl) {
+      consoleTabBtnEl.classList.toggle('nrp-tab-active', currentTab === TAB_CONSOLE);
+      const cc = consoleTabBtnEl.querySelector('.nrp-tab-count');
+      if (cc) cc.textContent = String(consoleRecords.length);
+    }
   }
 
   function switchTab(tab) {
     if (tab === currentTab) return;
     if (tab !== TAB_NETWORK && tab !== TAB_RESOURCE && tab !== TAB_STORAGE &&
-        tab !== TAB_WS && tab !== TAB_WATERFALL) return;
+        tab !== TAB_WS && tab !== TAB_WATERFALL && tab !== TAB_CONSOLE) return;
 
     const isTableView = function (t) {
-      return t !== TAB_STORAGE && t !== TAB_WS && t !== TAB_WATERFALL;
+      return t !== TAB_STORAGE && t !== TAB_WS && t !== TAB_WATERFALL && t !== TAB_CONSOLE;
     };
 
     if (!tabState[currentTab]) tabState[currentTab] = { search: '' };
@@ -3091,7 +3500,9 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
           ? 'Search name / value …（-word 排除）'
           : (tab === TAB_WATERFALL
             ? 'Search 接口 + 资源：url / method / status / type / headers …（-word 排除）'
-            : 'Search url / method / params / body / headers / status / response / mime …（-word 排除）'));
+            : (tab === TAB_CONSOLE
+              ? 'Search console 日志内容 / 级别 / 来源 …（-word 排除）'
+              : 'Search url / method / params / body / headers / status / response / mime …（-word 排除）')));
     }
     fillGroupOptions();
 
@@ -3101,13 +3512,16 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     if (typeof wsTableWrapEl !== 'undefined' && wsTableWrapEl) wsTableWrapEl.style.display = tab === TAB_WS ? '' : 'none';
     if (waterfallWrapEl) waterfallWrapEl.style.display = tab === TAB_WATERFALL ? '' : 'none';
     if (storeWrapEl) storeWrapEl.style.display = tab === TAB_STORAGE ? '' : 'none';
+    if (consoleTableWrapEl) consoleTableWrapEl.style.display = tab === TAB_CONSOLE ? '' : 'none';
+    if (consoleToolsWrapEl) consoleToolsWrapEl.style.display = tab === TAB_CONSOLE ? '' : 'none';
+    if (consoleChipsWrapEl) consoleChipsWrapEl.style.display = tab === TAB_CONSOLE ? '' : 'none';
     if (chipsEl) chipsEl.style.display = tab === TAB_NETWORK ? '' : 'none';
     if (chipsResEl) chipsResEl.style.display = tab === TAB_RESOURCE ? '' : 'none';
     const isNet = tab === TAB_NETWORK;
-    const isVisualOnly = tab === TAB_STORAGE || tab === TAB_WS || tab === TAB_WATERFALL;
+    const isVisualOnly = tab === TAB_STORAGE || tab === TAB_WS || tab === TAB_WATERFALL || tab === TAB_CONSOLE;
     /* WS 页签的 Clear 用于清空 WebSocket 记录，需保留 */
     if (clearBtnEl) clearBtnEl.style.display = (tab === TAB_STORAGE || tab === TAB_WATERFALL) ? 'none' : '';
-    if (exportBtnEl) exportBtnEl.style.display = isVisualOnly ? 'none' : '';
+    if (exportBtnEl) exportBtnEl.style.display = (isVisualOnly && tab !== TAB_CONSOLE) ? 'none' : '';
     if (harBtnEl) harBtnEl.style.display = isNet ? '' : 'none';
     if (importBtnEl) importBtnEl.style.display = isNet ? '' : 'none';
     if (maskBtnEl) maskBtnEl.style.display = isVisualOnly ? 'none' : '';
@@ -3146,8 +3560,8 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
   function fabBounds() {
     return {
       min: FAB_EDGE,
-      maxLeft: Math.max(FAB_EDGE, window.innerWidth - FAB_SIZE - FAB_EDGE),
-      maxTop: Math.max(FAB_EDGE, window.innerHeight - FAB_SIZE - FAB_EDGE)
+      maxLeft: Math.max(FAB_EDGE, win.innerWidth - FAB_SIZE - FAB_EDGE),
+      maxTop: Math.max(FAB_EDGE, win.innerHeight - FAB_SIZE - FAB_EDGE)
     };
   }
 
@@ -3163,13 +3577,13 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
   function saveFabPos(pos) {
     fabPos = pos;
-    try { localStorage.setItem(LS_KEY_FAB_POS, JSON.stringify(pos)); }
+    try { win.localStorage.setItem(LS_KEY_FAB_POS, JSON.stringify(pos)); }
     catch (e) { /* ignore */ }
   }
 
   function resetFabPos(fab) {
     fabPos = null;
-    try { localStorage.removeItem(LS_KEY_FAB_POS); } catch (e) { /* ignore */ }
+    try { win.localStorage.removeItem(LS_KEY_FAB_POS); } catch (e) { /* ignore */ }
     fab.style.left = '';
     fab.style.top = '';
     fab.style.right = '';
@@ -3181,7 +3595,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
   function syncPanelSide() {
     if (!rootEl) return;
     if (!fabPos) { rootEl.style.left = ''; rootEl.style.right = ''; return; }
-    const leftSide = fabPos.left + FAB_SIZE / 2 < window.innerWidth / 2;
+    const leftSide = fabPos.left + FAB_SIZE / 2 < win.innerWidth / 2;
     rootEl.style.left = leftSide ? '16px' : '';
     rootEl.style.right = leftSide ? 'auto' : '';
   }
@@ -3262,7 +3676,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       resetFabPos(fab);
     });
 
-    window.addEventListener('resize', function () {
+    win.addEventListener('resize', function () {
       applyFabPos(fab, fabPos);
       syncPanelSide();
     });
@@ -3274,7 +3688,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
   function loadColumnWidths() {
     const out = Object.create(null);
     try {
-      const raw = localStorage.getItem(LS_KEY_COL_WIDTHS);
+      const raw = win.localStorage.getItem(LS_KEY_COL_WIDTHS);
       if (!raw) return out;
       const obj = JSON.parse(raw);
       if (!obj || typeof obj !== 'object') return out;
@@ -3301,10 +3715,10 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     try {
       /* 没有任何自定义列宽时移除键，避免「恢复默认」后又留下空对象 */
       if (!Object.keys(columnWidths).length) {
-        localStorage.removeItem(LS_KEY_COL_WIDTHS);
+        win.localStorage.removeItem(LS_KEY_COL_WIDTHS);
         return;
       }
-      localStorage.setItem(LS_KEY_COL_WIDTHS, JSON.stringify(columnWidths));
+      win.localStorage.setItem(LS_KEY_COL_WIDTHS, JSON.stringify(columnWidths));
     } catch (e) { /* ignore */ }
   }
 
@@ -3727,8 +4141,8 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
   function resetAllSettings() {
     try {
-      if (typeof window.confirm === 'function' &&
-          !window.confirm('恢复所有设置为默认值？已捕获的记录不会被清除。')) return;
+      if (typeof win.confirm === 'function' &&
+          !win.confirm('恢复所有设置为默认值？已捕获的记录不会被清除。')) return;
     } catch (e) { /* ignore */ }
 
     capturePaused = false;
@@ -3747,7 +4161,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     [LS_KEY_PAUSED, LS_KEY_MASK_EXPORT, LS_KEY_SLOW, LS_KEY_LARGE_RES,
       LS_KEY_RES_SLOW, LS_KEY_DENSE, LS_KEY_MAX_RECORDS, LS_KEY_MAX_RES_RECORDS,
       LS_KEY_WF_SCALE, LS_KEY_COL_WIDTHS, LS_KEY_FAB_POS, LS_KEY_GROUP].forEach(function (k) {
-      try { localStorage.removeItem(k); } catch (e) { /* ignore */ }
+      try { win.localStorage.removeItem(k); } catch (e) { /* ignore */ }
     });
 
     columnWidths = Object.create(null);
@@ -3770,7 +4184,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
     const rows = [
       settingsGroup('捕获与隐私'),
-      settingsRow('暂停记录', '暂停后不再采集新请求（含跨帧上报）',
+      settingsRow('暂停记录', '暂停后不再采集新请求、WebSocket、静态资源与 console 日志（含跨帧上报）',
         settingsCheckbox('paused', function (v) {
           capturePaused = v;
           writeSetting(LS_KEY_PAUSED, v ? '1' : '0');
@@ -3830,7 +4244,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       h('div', { class: 'nrp-settings-actions' }, [resetColsBtn, resetFabBtn, resetAllBtn]),
       h('div', { class: 'nrp-settings-note' },
         '表头右侧竖线可拖拽调整列宽，双击该竖线复位；列宽、图标位置等设置会分别保存。' +
-        '本脚本使用 @grant none，所有设置仅在当前站点（origin）生效。'),
+        '设置保存在当前站点（origin）的 localStorage，换站点后需重新配置。'),
       h('div', { class: 'nrp-settings-note' }, 'Network Debugger v' + SCRIPT_VERSION),
       settingsStatusEl
     ];
@@ -3961,6 +4375,48 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     wsTableWrapEl = h('div', { class: 'nrp-table-wrap' }, wsTable);
     wsTableWrapEl.style.display = 'none';
 
+    /* ---------------- Console 子页 ---------------- */
+    const consoleTbodyEl = h('tbody');
+    const consoleTable = h('table', null, [
+      h('colgroup', null, [
+        h('col', { style: 'width:11%' }), h('col', { style: 'width:8%' }),
+        h('col', { style: 'width:65%' }), h('col', { style: 'width:16%' })
+      ]),
+      h('thead', null, h('tr', null, [
+        h('th', null, 'Time'), h('th', null, 'Level'),
+        h('th', null, 'Message'), h('th', null, 'Source')
+      ])),
+      consoleTbodyEl
+    ]);
+    consoleTableWrapEl = h('div', { class: 'nrp-table-wrap' }, consoleTable);
+    consoleTableWrapEl.style.display = 'none';
+    const consoleChipsEl = buildChipsFrom(CONSOLE_LEVEL_GROUPS, consoleFilter, '清除日志级别过滤');
+    consoleChipsEl.id = 'nrp-console-chips';
+    consoleChipsEl.style.display = 'none';
+    consoleChipsWrapEl = consoleChipsEl;
+    consoleAutoScrollEl = h('button', {
+      class: 'nrp-console-toggle nrp-console-toggle-on', type: 'button',
+      title: '开启后新日志自动滚动到底部'
+    }, '⤓ Auto-scroll');
+    consoleAutoScrollEl.addEventListener('click', function () {
+      consoleAutoScroll = !consoleAutoScroll;
+      consoleAutoScrollEl.classList.toggle('nrp-console-toggle-on', consoleAutoScroll);
+    });
+    const consoleClearBtn = h('button', {
+      class: 'nrp-btn nrp-btn-sm', type: 'button',
+      title: '清空所有已捕获的 console 日志（不影响页面本身）'
+    }, 'Clear');
+    consoleClearBtn.addEventListener('click', function () {
+      consoleRecords = [];
+      render();
+    });
+    consoleToolsWrapEl = h('div', { class: 'nrp-console-tools' }, [
+      consoleAutoScrollEl,
+      h('span', { class: 'nrp-console-tools-spacer' }),
+      consoleClearBtn
+    ]);
+    consoleToolsWrapEl.style.display = 'none';
+
     installColumnResizers(netTable, 'network');
     installColumnResizers(resTable, 'resource');
     installColumnResizers(wsTable, 'websocket');
@@ -4032,12 +4488,13 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     netTabBtnEl = makeTabButton('Network', 'nrp-tab-count-network', '接口请求（XHR / fetch / SSE）', true);
     resTabBtnEl = makeTabButton('Resources', 'nrp-tab-count-resource', '静态资源', false);
     wsTabBtnEl = makeTabButton('WS', 'nrp-tab-count-ws', 'WebSocket 连接与消息', false);
+    consoleTabBtnEl = makeTabButton('Console', 'nrp-tab-count-console', '页面 console 日志（log/warn/error 等）', false);
     storeTabBtnEl = makeTabButton('Storage', 'nrp-tab-count-storage', '查看 / 编辑 Cookies、LocalStorage、SessionStorage', false);
     wfTabBtnEl = makeTabButton('Waterfall', 'nrp-tab-count-waterfall', '请求耗时瀑布图：按时间轴查看并发与耗时', false);
 
     const header = h('div', { class: 'nrp-header' }, [
       h('div', { class: 'nrp-title' }, [h('span', { class: 'nrp-dot' }), 'Network Debugger']),
-      h('div', { class: 'nrp-tabs' }, [netTabBtnEl, resTabBtnEl, wfTabBtnEl, wsTabBtnEl, storeTabBtnEl]),
+      h('div', { class: 'nrp-tabs' }, [netTabBtnEl, resTabBtnEl, wfTabBtnEl, wsTabBtnEl, consoleTabBtnEl, storeTabBtnEl]),
       h('div', { class: 'nrp-actions' }, [
         collapseBtn, clearBtnEl, pauseBtnEl, exportBtnEl, importBtnEl,
         harBtnEl, maskBtnEl, settingsBtnEl, fsBtn, hideBtn, importFileEl
@@ -4047,7 +4504,8 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     const body = h('div', { class: 'nrp-body' }, [
       h('div', { class: 'nrp-toolbar' }, [searchEl, groupWrapEl, statsEl]),
       chipsEl, chipsResEl, netTableWrapEl, resTableWrapEl, wsTableWrapEl,
-      waterfallWrapEl, storeWrapEl
+      waterfallWrapEl, storeWrapEl,
+      consoleToolsWrapEl, consoleChipsWrapEl, consoleTableWrapEl
     ]);
 
     panelEl = h('div', { class: 'nrp-panel' }, [header, body]);
@@ -4122,7 +4580,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       placeholder: 'Value（值）', spellcheck: 'false', rows: '10'
     });
     storeViewSaveEl = h('button', { class: 'nrp-btn nrp-btn-primary', type: 'button' }, 'Save');
-    const storeViewDeleteEl = h('button', {
+    storeViewDeleteBtnEl = h('button', {
       class: 'nrp-btn nrp-btn-danger', type: 'button', title: '删除该条目'
     }, 'Delete');
     const storeViewCloseEl = h('button', { class: 'nrp-btn', type: 'button' }, 'Close');
@@ -4160,7 +4618,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
         storeViewTabsEl,
         storeViewSplitEl
       ],
-      footer: [storeViewDeleteEl, storeViewCloseEl, storeViewSaveEl],
+      footer: [storeViewDeleteBtnEl, storeViewCloseEl, storeViewSaveEl],
       showClose: false
     });
     storeViewOverlayEl = storeViewModal.overlay;
@@ -4194,6 +4652,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     if (typeof wsTabBtnEl !== 'undefined' && wsTabBtnEl) wsTabBtnEl.addEventListener('click', function () { switchTab(TAB_WS); });
     storeTabBtnEl.addEventListener('click', function () { switchTab(TAB_STORAGE); });
     wfTabBtnEl.addEventListener('click', function () { switchTab(TAB_WATERFALL); });
+    consoleTabBtnEl.addEventListener('click', function () { switchTab(TAB_CONSOLE); });
     settingsBtnEl.addEventListener('click', openSettingsModal);
 
     wfScaleSelectEl.addEventListener('change', function () {
@@ -4229,7 +4688,9 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     });
     storeToolsEl.children[0].addEventListener('click', addStorageEntry);
     storeToolsEl.children[1].addEventListener('click', function () {
-      if (currentTab === TAB_STORAGE) renderStorage();
+      if (currentTab !== TAB_STORAGE) return;
+      if (storeSubTab === 'cookie') requestGmCookies(true);
+      renderStorage();
     });
 
     /* Storage 新增条目事件 */
@@ -4246,7 +4707,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
     /* Storage 查看/编辑事件 */
     storeViewSaveEl.addEventListener('click', saveViewStorageModal);
-    storeViewDeleteEl.addEventListener('click', deleteFromViewModal);
+    storeViewDeleteBtnEl.addEventListener('click', deleteFromViewModal);
     storeViewCloseEl.addEventListener('click', closeViewStorageModal);
     storeViewValueEl.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveViewStorageModal(); }
@@ -4258,12 +4719,17 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
         setStoreViewTab(btn.getAttribute('data-svtab') === 'preview' ? 'preview' : 'edit');
       });
     });
-    window.addEventListener('resize', function () { applyStoreViewTab(); });
+    win.addEventListener('resize', function () { applyStoreViewTab(); });
 
     clearBtnEl.addEventListener('click', function () {
       if (currentTab === TAB_WS) {
         wsRecords = [];
         Object.keys(wsMap).forEach(function (k) { delete wsMap[k]; });
+        render();
+        return;
+      }
+      if (currentTab === TAB_CONSOLE) {
+        consoleRecords = [];
         render();
         return;
       }
@@ -4291,14 +4757,14 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
     pauseBtnEl.addEventListener('click', function () {
       capturePaused = !capturePaused;
-      try { localStorage.setItem(LS_KEY_PAUSED, capturePaused ? '1' : '0'); } catch (e) {}
+      try { win.localStorage.setItem(LS_KEY_PAUSED, capturePaused ? '1' : '0'); } catch (e) {}
       pauseBtnEl.textContent = capturePaused ? 'Resume' : 'Pause';
       pauseBtnEl.classList.toggle('nrp-btn-active', capturePaused);
       pauseBtnEl.title = capturePaused ? '已暂停记录，点击恢复' : '暂停记录';
     });
     maskBtnEl.addEventListener('click', function () {
       maskOnExport = !maskOnExport;
-      try { localStorage.setItem(LS_KEY_MASK_EXPORT, maskOnExport ? '1' : '0'); } catch (e) {}
+      try { win.localStorage.setItem(LS_KEY_MASK_EXPORT, maskOnExport ? '1' : '0'); } catch (e) {}
       maskBtnEl.classList.toggle('nrp-btn-active', maskOnExport);
       maskBtnEl.title = '导出时对敏感字段脱敏（当前：' + (maskOnExport ? '开启' : '关闭') + '）';
     });
@@ -4573,7 +5039,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       loading: 'lazy', referrerpolicy: 'no-referrer'
     });
     img.addEventListener('click', function () {
-      try { window.open(r.url, '_blank'); } catch (e) {}
+      try { win.open(r.url, '_blank'); } catch (e) {}
     });
     img.addEventListener('error', function () {
       const fb = h('div', { class: 'nrp-image-fallback' },
@@ -4698,6 +5164,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     if (currentTab === TAB_STORAGE) { renderStorage(); return; }
     if (currentTab === TAB_WS) { renderWS(); updateTabButtons(); return; }
     if (currentTab === TAB_WATERFALL) { renderWaterfall(); return; }
+    if (currentTab === TAB_CONSOLE) { renderConsole(); updateTabButtons(); return; }
     if (!tbodyEl) return;
 
     const isRes = currentTab === TAB_RESOURCE;
@@ -4748,6 +5215,10 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     try {
       if (storeSubTab === 'cookie') {
         const out = [];
+        const byName = Object.create(null);
+        const byKey = Object.create(null);
+        const hasGm = Array.isArray(gmCookies);
+
         const src = document.cookie || '';
         const pairs = src.split(';');
         for (let i = 0; i < pairs.length; i++) {
@@ -4756,11 +5227,83 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
           const idx = pair.indexOf('=');
           const name = (idx < 0 ? pair : pair.slice(0, idx)).trim();
           const value = idx < 0 ? '' : pair.slice(idx + 1).trim();
-          if (name) out.push({ name: name, value: value });
+          if (!name) continue;
+          const entry = {
+            name: name, value: value, httpOnly: false,
+            domain: '', path: '', secure: false, sameSite: '',
+            expires: 0, session: true,
+            from: '', time: 0, source: 'document.cookie'
+          };
+          byName[name] = entry;
+          out.push(entry);
+        }
+
+        /* 兜底：从拦截到的响应头还原（浏览器通常会过滤 Set-Cookie，故多数环境为空） */
+        Object.keys(setCookieStore).forEach(function (key) {
+          const c = setCookieStore[key];
+          if (c.deleted || (c.expires && c.expires <= Date.now())) return;
+          if (hasGm) return; /* GM_cookie 已就绪，以浏览器存储为准，不再用响应头快照 */
+          const same = byName[c.name];
+          if (same && !c.httpOnly) {
+            same.domain = c.domain;
+            same.path = c.path;
+            same.secure = c.secure;
+            same.sameSite = c.sameSite;
+            same.from = c.from;
+            same.time = c.time;
+            same.source = 'set-cookie';
+            return;
+          }
+          if (byKey[key]) return;
+          const item = {
+            name: c.name, value: c.value, httpOnly: !!c.httpOnly,
+            domain: c.domain, path: c.path, secure: c.secure,
+            sameSite: c.sameSite, expires: c.expires, session: false,
+            from: c.from, time: c.time, source: 'set-cookie'
+          };
+          byKey[key] = item;
+          out.push(item);
+        });
+
+        /* 主数据源：GM_cookie 能读到 HttpOnly，值以浏览器 Cookie 存储为准 */
+        if (hasGm) {
+          gmCookies.forEach(function (c) {
+            if (!c || !c.name) return;
+            const key = c.name + '|' + (c.domain || '') + '|' + (c.path || '');
+            const domain = c.domain || '';
+            const path = c.path || '/';
+            const secure = !!c.secure;
+            const sameSite = c.sameSite || '';
+            const expires = c.expirationDate ? c.expirationDate * 1000 : 0;
+            const session = !!c.session;
+            const doc = byName[c.name];
+            if (doc && !c.httpOnly) {
+              doc.domain = domain;
+              doc.path = path;
+              doc.secure = secure;
+              doc.sameSite = sameSite;
+              doc.expires = expires;
+              doc.session = session;
+              doc.source = 'gm_cookie';
+              byKey[key] = doc;
+              return;
+            }
+            if (byKey[key]) return;
+            const item = {
+              name: c.name,
+              value: c.value == null ? '' : String(c.value),
+              httpOnly: !!c.httpOnly,
+              domain: domain, path: path, secure: secure,
+              sameSite: sameSite, expires: expires, session: session,
+              from: '', time: 0, source: 'gm_cookie'
+            };
+            byKey[key] = item;
+            out.push(item);
+          });
         }
         return out;
       }
-      const store = storeSubTab === 'local' ? localStorage : sessionStorage;
+      const store = storeSubTab === 'local' ? win.localStorage : win.sessionStorage;
       const out = [];
       for (let i = 0; i < store.length; i++) {
         const k = store.key(i);
@@ -4776,23 +5319,31 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     try { return getStorageEntries().length; } catch (e) { return 0; }
   }
 
-  function setStorageEntry(name, value) {
+  function setStorageEntry(name, value, entry) {
     try {
       if (storeSubTab === 'cookie') {
-        document.cookie = name + '=' + encodeURIComponent(value) + '; path=/';
+        const path = (entry && entry.path) || '/';
+        let str = name + '=' + encodeURIComponent(value) + '; path=' + path;
+        if (entry && entry.secure) str += '; secure';
+        if (entry && entry.sameSite) str += '; SameSite=' + entry.sameSite;
+        document.cookie = str;
+        gmCookies = null;
       } else {
-        const store = storeSubTab === 'local' ? localStorage : sessionStorage;
+        const store = storeSubTab === 'local' ? win.localStorage : win.sessionStorage;
         store.setItem(name, value);
       }
     } catch (e) { /* ignore */ }
   }
 
-  function deleteStorageEntry(name) {
+  function deleteStorageEntry(name, entry) {
     try {
       if (storeSubTab === 'cookie') {
-        document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        const expired = '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=';
+        document.cookie = name + expired + ((entry && entry.path) || '/');
+        document.cookie = name + expired + '/';
+        gmCookies = null;
       } else {
-        const store = storeSubTab === 'local' ? localStorage : sessionStorage;
+        const store = storeSubTab === 'local' ? win.localStorage : win.sessionStorage;
         store.removeItem(name);
       }
     } catch (e) { /* ignore */ }
@@ -4838,7 +5389,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
   }
 
   function isMobileView() {
-    try { return window.matchMedia('(max-width: 768px)').matches; }
+    try { return win.matchMedia('(max-width: 768px)').matches; }
     catch (e) { return false; }
   }
 
@@ -4879,9 +5430,20 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     storeViewEntry = entry;
     storeViewTab = 'edit';
     setStoreViewTabButtons();
-    storeViewModal.setTitle('查看 / 编辑 · ' + STORE_SUB_LABELS[storeSubTab]);
+    const readOnly = !!(storeSubTab === 'cookie' && entry.httpOnly);
+    storeViewModal.setTitle((readOnly ? '查看 · HttpOnly Cookie' : '查看 / 编辑 · ') +
+      STORE_SUB_LABELS[storeSubTab]);
     storeViewKeyEl.value = entry.name;
     storeViewValueEl.value = entry.value;
+    storeViewKeyEl.readOnly = readOnly;
+    storeViewValueEl.readOnly = readOnly;
+    storeViewSaveEl.disabled = readOnly;
+    if (storeViewDeleteBtnEl) storeViewDeleteBtnEl.disabled = readOnly;
+    const tip = readOnly
+      ? 'HttpOnly Cookie 无法通过 document.cookie 读取/修改，此处展示 GM_cookie 读取的快照（只读）'
+      : '';
+    storeViewKeyEl.title = tip;
+    storeViewValueEl.title = tip;
     updateStoreViewHighlight();
     storeViewModal.open();
     storeViewValueEl.focus();
@@ -4893,17 +5455,19 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
   function saveViewStorageModal() {
     if (!storeViewEntry) return;
+    if (storeSubTab === 'cookie' && storeViewEntry.httpOnly) return;
     const n = (storeViewKeyEl.value || '').trim();
     if (!n) { storeViewKeyEl.focus(); return; }
-    if (n !== storeViewEntry.name) deleteStorageEntry(storeViewEntry.name);
-    setStorageEntry(n, storeViewValueEl.value || '');
+    if (n !== storeViewEntry.name) deleteStorageEntry(storeViewEntry.name, storeViewEntry);
+    setStorageEntry(n, storeViewValueEl.value || '', storeViewEntry);
     closeViewStorageModal();
     renderStorage();
   }
 
   function deleteFromViewModal() {
     if (!storeViewEntry) return;
-    deleteStorageEntry(storeViewEntry.name);
+    if (storeSubTab === 'cookie' && storeViewEntry.httpOnly) return;
+    deleteStorageEntry(storeViewEntry.name, storeViewEntry);
     closeViewStorageModal();
     renderStorage();
   }
@@ -4915,7 +5479,26 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     const tdName = document.createElement('td');
     tdName.className = 'nrp-store-td nrp-store-name';
     tdName.textContent = entry.name;
-    tdName.title = entry.name;
+    if (storeSubTab === 'cookie') {
+      const meta = [];
+      if (entry.domain) meta.push('Domain: ' + entry.domain);
+      if (entry.path) meta.push('Path: ' + entry.path);
+      if (entry.secure) meta.push('Secure');
+      if (entry.sameSite) meta.push('SameSite=' + entry.sameSite);
+      if (entry.from) meta.push('来源: ' + entry.from);
+      if (entry.source === 'gm_cookie') meta.push('由 GM_cookie 读取');
+      else if (entry.source === 'set-cookie') meta.push('由响应头 Set-Cookie 还原');
+      if (entry.expires) meta.push('Expires: ' + new Date(entry.expires).toLocaleString());
+      tdName.title = meta.length ? meta.join('\n') : entry.name;
+      if (entry.httpOnly) {
+        tdName.appendChild(h('span', {
+          class: 'nrp-cookie-badge',
+          title: 'HttpOnly：页面 JS 无法读取或修改，值由 GM_cookie 从浏览器 Cookie 存储读取'
+        }, 'HttpOnly'));
+      }
+    } else {
+      tdName.title = entry.name;
+    }
     tr.appendChild(tdName);
 
     const tdVal = document.createElement('td');
@@ -4923,19 +5506,26 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     const valText = document.createElement('div');
     valText.className = 'nrp-store-value-text';
     valText.textContent = entry.value;
-    valText.title = '点击查看 / 编辑完整内容';
+    valText.title = entry.httpOnly ? '点击查看完整内容（HttpOnly，只读）' : '点击查看 / 编辑完整内容';
     valText.addEventListener('click', function () { openViewStorageModal(entry); });
     tdVal.appendChild(valText);
     tr.appendChild(tdVal);
 
     const tdAct = document.createElement('td');
     tdAct.className = 'nrp-store-td nrp-store-actions';
-    const delBtn = h('button', { class: 'nrp-btn nrp-btn-sm', type: 'button', title: '删除该条目' }, 'Delete');
-    delBtn.addEventListener('click', function () {
-      deleteStorageEntry(entry.name);
-      renderStorage();
-    });
-    tdAct.appendChild(delBtn);
+    if (entry.httpOnly) {
+      tdAct.appendChild(h('span', {
+        class: 'nrp-cookie-ro',
+        title: 'HttpOnly Cookie 无法通过 document.cookie 修改或删除'
+      }, '只读'));
+    } else {
+      const delBtn = h('button', { class: 'nrp-btn nrp-btn-sm', type: 'button', title: '删除该条目' }, 'Delete');
+      delBtn.addEventListener('click', function () {
+        deleteStorageEntry(entry.name, entry);
+        renderStorage();
+      });
+      tdAct.appendChild(delBtn);
+    }
     tr.appendChild(tdAct);
 
     return tr;
@@ -4943,6 +5533,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
   function renderStorage() {
     if (!storeTableWrapEl) return;
+    if (storeSubTab === 'cookie') requestGmCookies(false);
 
     const q = (searchEl && searchEl.value ? searchEl.value : '').trim().toLowerCase();
     const terms = q ? q.split(/\s+/).filter(Boolean) : [];
@@ -4952,7 +5543,8 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
     const filtered = entries.filter(function (e) {
       if (!terms.length) return true;
-      const hay = (e.name + ' ' + e.value).toLowerCase();
+      const hay = (e.name + ' ' + e.value + ' ' + (e.domain || '') + ' ' +
+        (e.path || '') + ' ' + (e.httpOnly ? 'httponly' : '')).toLowerCase();
       return matchesTerms(hay, terms);
     });
 
@@ -4981,7 +5573,9 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       td.colSpan = 3;
       td.textContent = entries.length
         ? '没有匹配当前搜索的条目。'
-        : ('当前 ' + STORE_SUB_LABELS[storeSubTab] + ' 为空。');
+        : (storeSubTab === 'cookie'
+          ? '当前 Cookies 为空。HttpOnly Cookie 需要通过 GM_cookie 读取；请确认脚本已被授权 Cookie 权限。'
+          : ('当前 ' + STORE_SUB_LABELS[storeSubTab] + ' 为空。'));
       tr.appendChild(td);
       tbody.appendChild(tr);
     } else {
@@ -5079,6 +5673,105 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
     }
     currentCopyText = msgText;
     const msec = makeSection('Messages (' + ((r.messages && r.messages.length) || 0) + ')', msgText, 'nrp-section-response');
+    if (msec) modalResponseEl.appendChild(msec);
+    copyBtn.textContent = 'Copy';
+    if (netModal) netModal.open();
+  }
+
+
+  function getFilteredConsole() {
+    const raw = searchEl && searchEl.value ? searchEl.value : '';
+    const q = raw.trim().toLowerCase();
+    const terms = q ? q.split(/\s+/).filter(Boolean) : [];
+    return consoleRecords.filter(function (r) {
+      if (consoleFilter.level.size && !consoleFilter.level.has(consoleLevelGroup(r.level))) return false;
+      if (!terms.length) return true;
+      const hay = (r.level + ' ' + r.text + ' ' + (r.source || '') + ' ' + (r.frameUrl || '')).toLowerCase();
+      return matchesTerms(hay, terms);
+    });
+  }
+
+  function renderConsole() {
+    if (!consoleTableWrapEl) return;
+    const list = getFilteredConsole();
+    if (statsEl) statsEl.textContent = list.length + ' / ' + consoleRecords.length;
+    const tbody = consoleTableWrapEl.querySelector('tbody');
+    if (!tbody) return;
+    const atBottom = consoleAutoScroll &&
+      (consoleTableWrapEl.scrollHeight - consoleTableWrapEl.scrollTop - consoleTableWrapEl.clientHeight < 40);
+    clearEl(tbody);
+
+    if (!list.length) {
+      const tr = document.createElement('tr');
+      tr.className = 'nrp-empty-row';
+      const td = document.createElement('td');
+      td.className = 'nrp-empty';
+      td.colSpan = 4;
+      td.textContent = consoleRecords.length
+        ? '没有匹配当前搜索或级别过滤的日志。'
+        : '等待页面 console 输出…（log / info / warn / error / debug 等）';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    for (let i = list.length - 1; i >= 0; i--) {
+      const r = list[i];
+      const tr = document.createElement('tr');
+      tr.className = 'nrp-data-row';
+      tr.appendChild(cell(formatTime(r.time), 'nrp-cell-time', formatFullTime(r.time)));
+      const lv = document.createElement('td');
+      lv.className = 'nrp-store-td';
+      const badge = h('span', { class: 'nrp-console-lv nrp-console-lv-' + consoleLevelGroup(r.level) }, r.level);
+      lv.appendChild(badge);
+      tr.appendChild(lv);
+      const tdMsg = document.createElement('td');
+      tdMsg.className = 'nrp-console-msg';
+      tdMsg.textContent = r.text || '(empty)';
+      tdMsg.title = r.text || '';
+      tr.appendChild(tdMsg);
+      const src = r.source || r.frameUrl || '';
+      tr.appendChild(cell(src ? (src.length > 90 ? src.slice(0, 90) + '…' : src) : '', 'nrp-console-source', src));
+      tr.addEventListener('click', function () { openConsoleModal(r); });
+      tbody.appendChild(tr);
+    }
+    if (atBottom) consoleTableWrapEl.scrollTop = consoleTableWrapEl.scrollHeight;
+  }
+
+  function openConsoleModal(r) {
+    if (modalContentEl) modalContentEl.scrollTop = 0;
+    currentModalRecord = null;
+    currentModalExtra = null;
+    clearEl(modalHeadlineEl);
+    modalHeadlineEl.appendChild(h('span', {
+      class: 'nrp-badge nrp-badge-' + (r.level === 'error' || r.level === 'uncaught' || r.level === 'assert'
+        ? 'err' : (r.level === 'warn' ? 'time' : 'other'))
+    }, r.level));
+    modalHeadlineEl.appendChild(h('span', {
+      class: 'nrp-modal-url', title: formatFullTime(r.time)
+    }, formatTime(r.time)));
+    clearEl(modalParamsEl);
+    modalParamsEl.style.display = 'none';
+    clearEl(modalHeadersEl);
+    modalHeadersEl.style.display = '';
+    const info = [
+      'Level: ' + r.level,
+      'Time: ' + formatFullTime(r.time),
+      r.frameUrl ? ('Frame: ' + r.frameUrl) : '',
+      r.source ? ('Source: ' + r.source) : ''
+    ].filter(Boolean).join('\n');
+    const sec = makeSection('Info', info);
+    if (sec) modalHeadersEl.appendChild(sec);
+    if (r.args && r.args.length > 1) {
+      const argSec = makeSection('Arguments (' + r.args.length + ')', r.args.map(function (a, i) {
+        return '[' + i + '] ' + a;
+      }).join('\n'));
+      if (argSec) modalHeadersEl.appendChild(argSec);
+    }
+    clearEl(modalResponseEl);
+    modalResponseEl.style.display = '';
+    currentCopyText = r.text || '';
+    const msec = makeSection('Message', r.text || '(empty)', 'nrp-section-response');
     if (msec) modalResponseEl.appendChild(msec);
     copyBtn.textContent = 'Copy';
     if (netModal) netModal.open();
@@ -5651,7 +6344,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
         (sideEffect ? '（可能重复提交、产生副作用）' : '') +
         (hasCred ? '，并携带原请求中的 Authorization / Cookie 凭据' : '') +
         '。\n\n' + method + ' ' + url + '\n\n确定继续？';
-      if (!window.confirm(tip)) return;
+      if (!win.confirm(tip)) return;
       const headers = {};
       if (r.reqHeaders) {
         const lines = r.reqHeaders.split(/\r?\n/);
@@ -5675,7 +6368,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
       }
       fetch(url, opts).then(function (res) {
         try {
-          if (window.nrpLog) window.nrpLog('Replayed', method, url, '->', res.status);
+          if (win.nrpLog) win.nrpLog('Replayed', method, url, '->', res.status);
         } catch (e) {}
         alert('Replay: ' + method + ' ' + url + '\nStatus: ' + res.status);
       }).catch(function (e) {
@@ -5875,6 +6568,20 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
   }
 
   function exportJSON() {
+    if (currentTab === TAB_CONSOLE) {
+      const list = getFilteredConsole();
+      const data = list.map(function (r) {
+        return {
+          id: r.id, level: r.level, message: maskOnExport ? maskText(r.text) : r.text,
+          args: maskOnExport ? r.args.map(maskText) : r.args,
+          source: r.source || '', frameUrl: r.frameUrl || '',
+          time: formatFullTime(r.time)
+        };
+      });
+      downloadFile('console-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json',
+        JSON.stringify(data, null, 2));
+      return;
+    }
     const isRes = currentTab === TAB_RESOURCE;
     const mask = maskOnExport;
     const mx = function (v) { return mask ? maskText(v) : v; };
@@ -5932,7 +6639,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
             size: item.transferSize || 0, encodedSize: item.encodedBodySize || 0,
             decodedSize: item.decodedBodySize || 0, cache: item.cache || 'unknown',
             protocol: item.protocol || '', duration: item.duration || 0,
-            timing: item.timing || null, time: time
+            timing: item.timing || null, time: time, imported: true
           }, true);
         } else {
           pushRecord({
@@ -5942,7 +6649,8 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
             status: item.status || 0, response: item.response || '',
             responseKind: item.responseKind || 'text',
             mimeType: item.mimeType || '', binarySize: item.binarySize || 0,
-            duration: item.duration == null ? null : item.duration, time: time
+            duration: item.duration == null ? null : item.duration, time: time,
+            imported: true
           }, true);
         }
         n++;
@@ -5960,6 +6668,7 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
   installMessageListener();
   installResourceObserver();
   try { installWebSocketInterceptor(); } catch (e) {}
+  try { installConsoleInterceptor(); } catch (e) {}
 
   /* 全局 Esc：先关最上层模态框，无模态框时退出全屏 */
   document.addEventListener('keydown', function (e) {
@@ -5981,4 +6690,3 @@ body.nrp-col-resizing #nrp-root * { cursor: col-resize !important; user-select: 
 
   bootstrap();
 })();
-
